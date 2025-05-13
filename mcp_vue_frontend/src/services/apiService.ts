@@ -29,6 +29,7 @@ export interface ServerConfig {
     cwd?: string; // Optional working directory
     env?: Record<string, string>; // Optional environment variables
     capabilities_for_tool_config: ToolCapability[]; // Discovered capabilities
+    shell?: boolean; // Whether to use shell for command execution
     // Note: Fields like display_name, provider, ollama_config etc. belong in LLMConfig
 }
 

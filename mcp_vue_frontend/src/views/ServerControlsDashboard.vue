@@ -10,6 +10,7 @@ import {
     removeServerConfig as apiRemoveServerConfig,
     updateLLMActiveTools,
     type ServerConfig,
+    updateServerConfig,
     // deleteServerConfig as apiDeleteServerConfig, // Assuming this will be added to apiService
 } from '../services/apiService';
 
@@ -274,6 +275,50 @@ async function handleRemoveServer(serverName: string) {
     }
 }
 
+async function handleToggleShell(serverName: string) {
+    const serverConfig = servers.value[serverName];
+    if (!serverConfig) {
+        console.error(`[DASHBOARD] Config not found for ${serverName} on shell toggle.`);
+        actionFeedback[serverName] = { message: `Configuration for ${serverName} not found.`, type: 'error' };
+        return;
+    }
+
+    // The checkbox v-model directly updates serverConfig.shell, so it should be the new value.
+    const newShellValue = serverConfig.shell === undefined ? false : serverConfig.shell; // Ensure boolean
+
+    actionFeedback[serverName] = { message: `Updating 'Use Shell' for ${serverName}...`, type: 'success' };
+
+    try {
+        // Create a new object for the update to ensure reactivity if needed, though direct mutation might also work
+        const updatedConfig: ServerConfig = {
+            ...serverConfig, // Spread existing config
+            shell: newShellValue // Set the new shell value
+        };
+
+        // Ensure args is an array if it became undefined/null during spread or otherwise
+        if (!updatedConfig.args) {
+            updatedConfig.args = [];
+        }
+        
+        console.log(`[DASHBOARD] Updating shell for ${serverName} to ${newShellValue}. Config to send:`, JSON.parse(JSON.stringify(updatedConfig)));
+
+        // We need to pass the original serverName (config key) as the first argument if the API expects it
+        // and the config object as the second.
+        // The `updateServerConfig` in apiService.ts takes `(serverId: string, config: ServerConfig)`
+        await updateServerConfig(serverName, updatedConfig);
+
+        // Update local state to reflect the persisted change
+        servers.value[serverName].shell = newShellValue;
+        actionFeedback[serverName] = { message: `'Use Shell' for ${serverName} updated to ${newShellValue}.`, type: 'success' };
+
+    } catch (err: any) {
+        console.error(`[DASHBOARD] Failed to update shell for ${serverName}:`, err);
+        actionFeedback[serverName] = { message: err.message || `Failed to update shell for ${serverName}.`, type: 'error' };
+        // Revert local change on error
+        servers.value[serverName].shell = !newShellValue; 
+    }
+}
+
 function navigateToAddServerConfig() {
     router.push({ path: '/server-configs/new' });
 }
@@ -398,6 +443,17 @@ const sendCapabilitiesToLLM = async () => {
           <button @click="handleRefreshCapabilities(serverName as string)" :disabled="serverStatuses[serverName as string]?.status !== 'running' && serverStatuses[serverName as string]?.status !== 'connected'" class="action-button capabilities-button">Refresh Capabilities</button>
           <button @click="handleEditServer(serverName as string)" class="action-button edit-button">Edit</button>
           <button @click="handleRemoveServer(serverName as string)" class="action-button remove-button">Remove</button>
+        </div>
+        <div class="server-shell-toggle form-section-checkbox">
+          <label :for="`shell-toggle-${serverName}`" class="checkbox-label">
+            <input 
+              type="checkbox" 
+              :id="`shell-toggle-${serverName}`" 
+              v-model="config.shell" 
+              @change="handleToggleShell(serverName)"
+            />
+            Use Shell
+          </label>
         </div>
         <div v-if="actionFeedback[serverName as string]" :class="['feedback-message', actionFeedback[serverName as string]?.type]">
           {{ actionFeedback[serverName as string]?.message }}
@@ -699,6 +755,28 @@ const sendCapabilitiesToLLM = async () => {
   background-color: #4A4A4A;
   border-color: #80cbc4;
   color: #F0F0F0;
+}
+
+.server-shell-toggle {
+  margin-top: 10px;
+  padding: 8px;
+  background-color: #f8f9fa; /* Light background for the toggle section */
+  border-radius: 4px;
+  border: 1px solid #e9ecef;
+}
+
+.server-shell-toggle .checkbox-label {
+  display: flex;
+  align-items: center;
+  font-size: 0.9em;
+  font-weight: normal;
+  color: #333;
+}
+
+.server-shell-toggle input[type="checkbox"] {
+  width: auto; /* Override general input styling if any */
+  margin-right: 8px;
+  transform: scale(0.9); /* Slightly smaller checkbox */
 }
 
 </style> 
