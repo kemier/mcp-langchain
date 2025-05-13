@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>简单测试页面</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 40px;
+            line-height: 1.6;
+        }
+        h1 {
+            color: #333;
+        }
+    </style>
+</head>
+<body>
+    <h1>测试页面</h1>
+    <p>如果您能看到这个页面，说明Web服务器正在正常工作，但可能Vue应用存在问题。</p>
+    <p>当前时间: <span id="time"></span></p>
+    
+    <script>
+        // 简单的JavaScript代码，不依赖任何框架
+        document.getElementById('time').textContent = new Date().toLocaleString();
+    </script>
+</body>
+</html> 

@@ -1,0 +1,845 @@
+import { Observable, Subject, Subscription } from 'rxjs'; // Ensure this is at the top with other imports
+// import { io, Socket } from 'socket.io-client'; // --- Remove Socket.IO import
+
+// Define the base URL for our backend API
+export const API_BASE_URL = '/api'; // 使用相对路径，让vite的代理功能处理请求
+// const WS_URL = 'ws://localhost:8008/ws/generate-stream'; // <<< REMOVE THIS LINE - Obsolete WebSocket URL
+
+// Define an interface for the server configuration we expect from the backend
+// This should match the Pydantic model in your FastAPI backend (models.ServerConfig)
+export interface ToolCapability {
+    name: string;
+    description: string;
+}
+
+export interface ServerConfig {
+    name: string;
+    description: string;
+    command: string;
+    args: string[];
+    transport: string;
+    url?: string;
+    cwd?: string;
+    capabilities_for_tool_config: ToolCapability[];
+}
+
+// Define an interface for the server status response
+export interface ServerStatusResponse {
+    server_name: string;
+    status: string;
+    message?: string;
+    pid?: number;
+    discovered_capabilities?: any[];
+}
+
+// --- NEW Chat Message Interface ---
+export interface ChatMessage {
+    sender: 'user' | 'agent' | 'system';
+    text: string;
+    id?: string;
+    isGenerating?: boolean;
+}
+
+// --- NEW Chat Request Interface (matches backend Pydantic model) ---
+interface ChatBotRequest {
+    message: string;
+    active_tools_config: Record<string, any[]>; // Simplified for now
+}
+
+// --- NEW Chat Response Interface (matches backend Pydantic model) ---
+interface ChatBotResponse {
+    reply: string;
+}
+
+// --- LLM Configuration Model (matches backend Pydantic LLMConfig) ---
+export interface OllamaConfig {
+    base_url: string;
+    model: string;
+    temperature: number;
+    // Add other Ollama-specific options if mirrored from backend
+}
+
+export interface LLMConfig {
+    config_id: string; // Unique identifier, e.g., "ollama_local_llama3"
+    provider: string; // e.g., "ollama", "openai", "deepseek"
+    display_name: string; // User-friendly name, e.g., "Local Llama3 (Ollama)"
+    ollama_config?: OllamaConfig; // Optional, present if provider is ollama
+    // Add other provider configs here as needed, e.g.:
+    // openai_config?: OpenAIConfig;
+    // deepseek_config?: DeepSeekConfig;
+    api_key_env_var?: string; // e.g., "OPENAI_API_KEY", if API key is needed from env
+    is_default?: boolean;
+}
+
+// This interface is used when the frontend sends a new chat message to the WebSocket
+export interface WebSocketChatPayload {
+    session_id: string;
+    prompt: string;
+    tools_config: Record<string, any[]>;
+    llm_config_id?: string | null; // Added for LLM selection
+}
+
+// +++ Type for LLM Config Update Payload (Partial LLMConfig for frontend use) +++
+export type LLMConfigUpdatePayload = Partial<Omit<LLMConfig, 'config_id'>>;
+
+/**
+ * Fetches the list of all configured MCP servers from the backend.
+ */
+export async function getServers(): Promise<Record<string, ServerConfig>> {
+    try {
+        const response = await fetch(`${API_BASE_URL}/servers`);
+        if (!response.ok) {
+            // If the server response is not OK (e.g., 404, 500),
+            // throw an error with the status text.
+            const errorData = await response.text();
+            throw new Error(`Failed to fetch servers: ${response.status} ${response.statusText} - ${errorData}`);
+        }
+        return await response.json() as Record<string, ServerConfig>;
+    } catch (error) {
+        console.error('Error fetching servers:', error);
+        throw error; // Re-throw the error to be caught by the calling component
+    }
+}
+
+/**
+ * Fetches the list of all available LLM configurations from the backend.
+ */
+export async function fetchLLMConfigurations(): Promise<LLMConfig[]> {
+    try {
+        const response = await fetch(`${API_BASE_URL}/llm-configs`);
+        if (!response.ok) {
+            const errorData = await response.text();
+            throw new Error(`Failed to fetch LLM configurations: ${response.status} ${response.statusText} - ${errorData}`);
+        }
+        return await response.json() as LLMConfig[];
+    } catch (error) {
+        console.error('Error fetching LLM configurations:', error);
+        throw error; // Re-throw the error to be caught by the calling component
+    }
+}
+
+/**
+ * Sends a request to start a specific MCP server.
+ * @param serverId The ID of the server to start.
+ */
+export async function startServer(serverId: string): Promise<ServerStatusResponse> {
+    try {
+        if (!serverId || typeof serverId !== 'string') {
+            throw new Error(`Invalid server ID: ${serverId}`);
+        }
+        
+        console.log(`[API-DEBUG] Starting server request for: ${serverId}`);
+        const url = `${API_BASE_URL}/servers/${serverId}/start`;
+        console.log(`[API-DEBUG] Request URL: ${url}`);
+        
+        let response;
+        try {
+            response = await fetch(url, {
+                method: 'POST',
+            });
+            console.log(`[API-DEBUG] Server start response status: ${response.status} ${response.statusText}`);
+        } catch (fetchError: any) {
+            console.error(`[API-DEBUG] Fetch operation failed:`, fetchError);
+            throw new Error(`Network error while starting server ${serverId}: ${fetchError.message}`);
+        }
+        
+        if (!response.ok) {
+            let errorData;
+            try {
+                errorData = await response.text();
+                console.error(`[API-DEBUG] Error response body: ${errorData}`);
+            } catch (textError: any) {
+                console.error(`[API-DEBUG] Failed to read error response body:`, textError);
+                errorData = 'Could not read error details';
+            }
+            
+            throw new Error(`Failed to start server ${serverId}: ${response.status} ${response.statusText} - ${errorData}`);
+        }
+        
+        let responseData;
+        try {
+            responseData = await response.json();
+            console.log(`[API-DEBUG] Server start success response:`, responseData);
+        } catch (jsonError: any) {
+            console.error(`[API-DEBUG] Failed to parse JSON response:`, jsonError);
+            throw new Error(`Invalid response format while starting server ${serverId}: ${jsonError.message}`);
+        }
+        
+        return responseData as ServerStatusResponse;
+    } catch (error) {
+        console.error(`[API-DEBUG] Exception in startServer for ${serverId}:`, error);
+        throw error;
+    }
+}
+
+/**
+ * Sends a request to stop a specific MCP server.
+ * @param serverId The ID of the server to stop.
+ */
+export async function stopServer(serverId: string): Promise<ServerStatusResponse> {
+    try {
+        const response = await fetch(`${API_BASE_URL}/servers/${serverId}/stop`, {
+            method: 'POST',
+        });
+        if (!response.ok) {
+            const errorData = await response.text();
+            throw new Error(`Failed to stop server ${serverId}: ${response.status} ${response.statusText} - ${errorData}`);
+        }
+        return await response.json() as ServerStatusResponse;
+    } catch (error) {
+        console.error(`Error stopping server ${serverId}:`, error);
+        throw error;
+    }
+}
+
+/**
+ * Fetches the status of a specific MCP server.
+ * @param serverId The ID of the server to get status for.
+ */
+export async function getServerStatus(serverId: string): Promise<ServerStatusResponse> {
+    try {
+        const response = await fetch(`${API_BASE_URL}/servers/${serverId}/status`);
+        if (!response.ok) {
+            const errorData = await response.text();
+            throw new Error(`Failed to get status for server ${serverId}: ${response.status} ${response.statusText} - ${errorData}`);
+        }
+        return await response.json() as ServerStatusResponse;
+    } catch (error) {
+        console.error(`Error getting status for server ${serverId}:`, error);
+        throw error;
+    }
+}
+
+/**
+ * Refreshes the capabilities of a specific MCP server.
+ * @param serverId The ID of the server to refresh capabilities for.
+ */
+export async function refreshServerCapabilities(serverId: string): Promise<ServerStatusResponse> {
+    try {
+        const response = await fetch(`${API_BASE_URL}/servers/${serverId}/refresh-capabilities`, {
+            method: 'POST',
+        });
+        if (!response.ok) {
+            const errorData = await response.text();
+            throw new Error(`Failed to refresh capabilities for server ${serverId}: ${response.status} ${response.statusText} - ${errorData}`);
+        }
+        return await response.json() as ServerStatusResponse;
+    } catch (error) {
+        console.error(`Error refreshing capabilities for server ${serverId}:`, error);
+        throw error;
+    }
+}
+
+/**
+ * Adds a new server configuration.
+ * @param serverName The name/identifier for the new server
+ * @param config The server configuration object
+ */
+export async function addServer(serverName: string, config: ServerConfig): Promise<{ success: boolean; message: string }> {
+    try {
+        console.log(`[API] Adding new server: ${serverName}`, config);
+        
+        const response = await fetch(`${API_BASE_URL}/servers`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                config_key: serverName,
+                config: config
+            }),
+        });
+        
+        const responseData = await response.json();
+        
+        if (!response.ok) {
+            throw new Error(`Failed to add server: ${responseData.message || response.statusText}`);
+        }
+        
+        return responseData;
+    } catch (error) {
+        console.error(`Error adding server ${serverName}:`, error);
+        throw error;
+    }
+}
+
+// --- NEW agentChat function ---
+/**
+ * Sends a message to the chat bot and gets a reply.
+ * @param message The user's message.
+ * @param activeToolsConfig The configuration of tools to be made available to the bot.
+ */
+export async function chatBot(message: string, activeToolsConfig: Record<string, any[]>): Promise<string> {
+    const requestBody: ChatBotRequest = {
+        message,
+        active_tools_config: activeToolsConfig
+    };
+
+    try {
+        const response = await fetch(`${API_BASE_URL}/chat_bot`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(requestBody),
+        });
+
+        if (!response.ok) {
+            // Try to parse error detail from JSON response, otherwise use statusText
+            const errorDetail = await response.json().then(data => data.detail).catch(() => response.statusText);
+            throw new Error(`Chat bot failed: ${response.status} - ${errorDetail || 'Unknown error'}`);
+        }
+        const responseData: ChatBotResponse = await response.json();
+        return responseData.reply;
+    } catch (error) {
+        console.error('Error in chatBot service call:', error);
+        throw error; // Re-throw to be caught by the calling component
+    }
+}
+
+/**
+ * Creates a new server configuration by sending it to the backend.
+ * @param configKey The unique key for the server config (used as the key in servers.json)
+ * @param config The server configuration object
+ */
+export async function createServerConfig(configKey: string, config: ServerConfig): Promise<{ success: boolean; message: string }> {
+    try {
+        const response = await fetch(`${API_BASE_URL}/servers`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ config_key: configKey, config }),
+        });
+        if (!response.ok) {
+            const errorData = await response.text();
+            throw new Error(`Failed to create server config: ${response.status} ${response.statusText} - ${errorData}`);
+        }
+        return await response.json();
+    } catch (error) {
+        console.error('Error creating server config:', error);
+        throw error;
+    }
+}
+
+/**
+ * Updates an existing server configuration by sending it to the backend.
+ * @param serverId The unique key for the server config to update
+ * @param config The updated server configuration object
+ */
+export async function updateServerConfig(serverId: string, config: ServerConfig): Promise<{ success: boolean; message: string }> {
+    try {
+        const response = await fetch(`${API_BASE_URL}/servers/${serverId}`, {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ config }),
+        });
+        if (!response.ok) {
+            const errorData = await response.text();
+            throw new Error(`Failed to update server config: ${response.status} ${response.statusText} - ${errorData}`);
+        }
+        return await response.json();
+    } catch (error) {
+        console.error(`Error updating server config for ${serverId}:`, error);
+        throw error;
+    }
+}
+
+/**
+ * Removes a server configuration from the backend.
+ * @param serverId The unique key for the server config to remove
+ */
+export async function removeServerConfig(serverId: string): Promise<{ success: boolean; message: string }> {
+    try {
+        const response = await fetch(`${API_BASE_URL}/servers/${serverId}`, {
+            method: 'DELETE',
+        });
+        if (!response.ok) {
+            const errorData = await response.text();
+            throw new Error(`Failed to remove server config: ${response.status} ${response.statusText} - ${errorData}`);
+        }
+        return await response.json();
+    } catch (error) {
+        console.error(`Error removing server config for ${serverId}:`, error);
+        throw error;
+  }
+}
+
+/**
+ * Streams text generation using Server-Sent Events (SSE) instead of Socket.IO.
+ * Returns an Observable that emits tokens as they're received.
+ */
+export function streamTextGenerationObservable(
+    sessionId: string,
+    prompt: string,
+    toolsConfig: Record<string, any[]>,
+    llmConfigId?: string | null,
+    baseUrl?: string, // Optional base URL override
+    // The socketIoUrl and socketIoPath parameters are kept for backward compatibility but no longer used
+    socketIoUrl?: string, // Deprecated, kept for backward compatibility
+    socketIoPath?: string // Deprecated, kept for backward compatibility
+): Observable<string> {
+    // Create a new Subject that will emit text tokens as they come in
+    const subject = new Subject<string>();
+    
+    // Create the payload for the SSE request
+    const payload = {
+        session_id: sessionId,
+        prompt: prompt,
+        tools_config: toolsConfig,
+        llm_config_id: llmConfigId || undefined,
+        agent_mode: "chat", // Default to chat mode
+    };
+    
+    // Determine the base URL to use (provided or default API_BASE_URL)
+    const effectiveBaseUrl = baseUrl || API_BASE_URL;
+    const sseUrl = `${effectiveBaseUrl}/stream-events-sse`;
+
+    console.log(`[STREAM-DEBUG] Initiating SSE stream to: ${sseUrl}`, {
+        session_id: sessionId,
+        prompt_preview: prompt.substring(0, 30) + (prompt.length > 30 ? '...' : ''),
+        llm_config_id: llmConfigId
+    });
+
+    // Debug log to track streaming requests
+    sendDebugLog('frontend', 'sse_request_start', {
+        session_id: sessionId,
+        url: sseUrl,
+        timestamp: new Date().toISOString(),
+        payload_size: JSON.stringify(payload).length
+    });
+
+    // Make the POST request to initiate the SSE stream
+    fetch(sseUrl, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Cache-Control': 'no-cache',
+        },
+        body: JSON.stringify(payload),
+    })
+    .then(response => {
+        if (!response.ok) {
+            console.error(`[STREAM-DEBUG] HTTP error! Status: ${response.status}`, response);
+            sendDebugLog('frontend', 'sse_response_error', {
+                status: response.status,
+                statusText: response.statusText,
+                session_id: sessionId
+            });
+            throw new Error(`HTTP error! Status: ${response.status}`);
+        }
+        
+        console.log(`[STREAM-DEBUG] SSE connection established, status: ${response.status}`);
+        sendDebugLog('frontend', 'sse_connection_established', {
+            session_id: sessionId,
+            status: response.status,
+            headers: Object.fromEntries(response.headers.entries())
+        });
+        
+        // Create an EventSource for the SSE stream
+        // We use a ReadableStream from the response and handle it manually
+        // instead of using the EventSource API directly because we need to
+        // handle a POST request with a body
+        const reader = response.body?.getReader();
+        if (!reader) {
+            console.error('[STREAM-DEBUG] Cannot get reader from response body');
+            sendDebugLog('frontend', 'sse_reader_error', {
+                session_id: sessionId,
+                error: 'Reader is null'
+            });
+            throw new Error("Cannot get reader from response body");
+        }
+
+        // TypeScript type narrowing - this reader is guaranteed to be defined after the check above
+        const safeReader = reader;
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let eventCount = 0;
+        let lastEventTime = Date.now();
+        
+        // Setup an event listener for browser disconnect events
+        const beforeUnloadHandler = () => {
+            console.log('[STREAM-DEBUG] Browser unload event detected, closing SSE connection');
+            sendDebugLog('frontend', 'sse_browser_unload', {
+                session_id: sessionId,
+                eventCount: eventCount
+            });
+            try {
+                safeReader.cancel('User navigated away');
+            } catch (err) {
+                console.error('[STREAM-DEBUG] Error cancelling reader on unload:', err);
+            }
+        };
+        
+        window.addEventListener('beforeunload', beforeUnloadHandler);
+
+        function processEvents() {
+            safeReader.read().then(({ done, value }) => {
+                const currentTime = Date.now();
+                const timeSinceLastEvent = currentTime - lastEventTime;
+                lastEventTime = currentTime;
+                
+                if (done) {
+                    console.log("[STREAM-DEBUG] SSE stream closed by server");
+                    sendDebugLog('frontend', 'sse_stream_closed', {
+                        session_id: sessionId,
+                        reason: 'done_signal',
+                        eventCount
+                    });
+                    // Clean up the unload handler
+                    window.removeEventListener('beforeunload', beforeUnloadHandler);
+                    subject.complete();
+                    return;
+                }
+
+                // Decode the chunks and add to buffer
+                const chunk = decoder.decode(value, { stream: true });
+                buffer += chunk;
+                
+                // Log the raw data for debugging
+                console.log(`[STREAM-DEBUG] Received chunk: ${chunk.length} bytes, time since last: ${timeSinceLastEvent}ms`);
+                if (chunk.length > 0) {
+                    sendDebugLog('frontend', 'sse_chunk_received', {
+                        session_id: sessionId,
+                        chunkSize: chunk.length,
+                        timeSinceLastEvent,
+                        chunkPreview: chunk.length > 100 ? chunk.substring(0, 50) + '...' + chunk.substring(chunk.length - 50) : chunk
+                    });
+                }
+                
+                // Process complete events in the buffer
+                // Note: SSE events are separated by double newlines
+                const events = buffer.split('\n\n');
+                
+                // Keep the last partial event in the buffer
+                buffer = events.pop() || ''; 
+                
+                const completeEventCount = events.length;
+                if (completeEventCount > 0) {
+                    console.log(`[STREAM-DEBUG] Processing ${completeEventCount} complete SSE events`);
+                    sendDebugLog('frontend', 'sse_events_processing', {
+                        session_id: sessionId,
+                        completeEventCount,
+                        bufferRemaining: buffer.length
+                    });
+                }
+                
+                // Process each complete event
+                for (const eventText of events) {
+                    if (!eventText.trim()) continue;
+                    
+                    eventCount++;
+                    
+                    // Parse the event
+                    let eventType = '';
+                    let eventData = '';
+                    
+                    // Split by newlines to handle multi-line events
+                    const eventLines = eventText.split('\n');
+                    for (const line of eventLines) {
+                        if (line.startsWith('event:')) {
+                            eventType = line.substring(6).trim();
+                        } else if (line.startsWith('data:')) {
+                            eventData = line.substring(5).trim();
+                        }
+                    }
+                    
+                    // Console.log the raw data for debugging
+                    console.log(`[STREAM-DEBUG] Event #${eventCount} received:`, { 
+                        eventType, 
+                        dataPreview: eventData ? 
+                            (eventData.length > 100 ? 
+                                eventData.substring(0, 50) + '...' + eventData.substring(eventData.length - 50) 
+                                : eventData) 
+                            : 'empty' 
+                    });
+                    
+                    // Skip if no data
+                    if (!eventData) {
+                        console.warn('[STREAM-DEBUG] Empty eventData received, skipping');
+                        sendDebugLog('frontend', 'sse_empty_event', {
+                            session_id: sessionId,
+                            eventType,
+                            eventNumber: eventCount
+                        });
+                        continue;
+                    }
+                    
+                    try {
+                        const parsedData = JSON.parse(eventData);
+                        
+                        // Handle different event types
+                        if (eventType === 'token' && parsedData.content) {
+                            console.log(`[STREAM-DEBUG] Token received: ${parsedData.content.length} chars`);
+                            sendDebugLog('frontend', 'sse_token_received', {
+                                session_id: sessionId,
+                                contentLength: parsedData.content.length,
+                                contentPreview: parsedData.content.substring(0, 20) + (parsedData.content.length > 20 ? '...' : '')
+                            });
+                            subject.next(parsedData.content);
+                        } else if (eventType === 'error_event') {
+                            console.error('[STREAM-DEBUG] SSE error event:', parsedData);
+                            sendDebugLog('frontend', 'sse_error_event', {
+                                session_id: sessionId,
+                                error: parsedData.error || 'Unknown error'
+                            });
+                            // Include error message in the stream so user can see it
+                            if (parsedData.error) {
+                                subject.next(`Error: ${parsedData.error}`);
+                            }
+                            subject.error(new Error(parsedData.error || 'Unknown SSE error'));
+                        } else if (eventType === 'generation_complete') {
+                            console.log('[STREAM-DEBUG] Generation complete event:', parsedData);
+                            sendDebugLog('frontend', 'sse_generation_complete', {
+                                session_id: sessionId,
+                                status: parsedData.status,
+                                contentLength: parsedData.content ? parsedData.content.length : 0
+                            });
+                            
+                            if (parsedData.status === 'done' && parsedData.content) {
+                                // For complete messages, emit the content if not already emitted or it's a special case
+                                if (parsedData.content !== 'Core streaming error') {
+                                    console.log(`[STREAM-DEBUG] Emitting complete content: ${parsedData.content.length} chars`);
+                                    subject.next(parsedData.content);
+                                } else {
+                                    console.warn('[STREAM-DEBUG] Received Core streaming error in generation_complete');
+                                    subject.next('An error occurred during processing. Please try again.');
+                                }
+                            } else if (parsedData.status === 'error') {
+                                console.error('[STREAM-DEBUG] Error status in generation_complete:', parsedData);
+                                subject.next(`Error: ${parsedData.content || 'Unknown error'}`);
+                            }
+                            
+                            // Signal completion after the last message with a small delay to ensure all UI updates complete
+                            setTimeout(() => {
+                                console.log('[STREAM-DEBUG] Completing subject after generation_complete');
+                                sendDebugLog('frontend', 'sse_stream_complete', {
+                                    session_id: sessionId,
+                                    totalEvents: eventCount
+                                });
+                                subject.complete();
+                            }, 100);
+                        } else if (eventType === 'message' && parsedData.content) {
+                            console.log(`[STREAM-DEBUG] Message event received: ${parsedData.content.length} chars`);
+                            sendDebugLog('frontend', 'sse_message_received', {
+                                session_id: sessionId,
+                                contentLength: parsedData.content.length
+                            });
+                            subject.next(parsedData.content);
+                        } else {
+                            // Log unexpected event types for debugging
+                            console.log(`[STREAM-DEBUG] Unhandled event type: ${eventType}`, parsedData);
+                            sendDebugLog('frontend', 'sse_unhandled_event_type', {
+                                session_id: sessionId,
+                                eventType,
+                                dataPreview: JSON.stringify(parsedData).substring(0, 100)
+                            });
+                        }
+                    } catch (err) {
+                        console.error('[STREAM-DEBUG] Error parsing SSE event data:', err, eventData);
+                        sendDebugLog('frontend', 'sse_parse_error', {
+                            session_id: sessionId,
+                            error: err instanceof Error ? err.message : String(err),
+                            dataPreview: eventData.substring(0, 200)
+                        });
+                        
+                        // Try to make use of malformed data as a fallback
+                        if (typeof eventData === 'string' && eventData.length > 0) {
+                            console.log('[STREAM-DEBUG] Attempting to use malformed data as raw text');
+                            subject.next(`[Raw data: ${eventData.substring(0, 100)}${eventData.length > 100 ? '...' : ''}]`);
+                        }
+                    }
+                }
+                
+                // Continue reading
+                processEvents();
+            }).catch(err => {
+                console.error('[STREAM-DEBUG] Error reading from SSE stream:', err);
+                sendDebugLog('frontend', 'sse_read_error', {
+                    session_id: sessionId,
+                    error: err instanceof Error ? err.message : String(err),
+                    stack: err instanceof Error ? err.stack : undefined
+                });
+                // Clean up the unload handler
+                window.removeEventListener('beforeunload', beforeUnloadHandler);
+                subject.error(err);
+            });
+        }
+        
+        // Start processing the stream
+        processEvents();
+    })
+    .catch(error => {
+        console.error('[STREAM-DEBUG] Error setting up SSE stream:', error);
+        sendDebugLog('frontend', 'sse_setup_error', {
+            session_id: sessionId,
+            error: error instanceof Error ? error.message : String(error),
+            stack: error instanceof Error ? error.stack : undefined
+        });
+        // No need to clean up beforeUnloadHandler here as it's not created yet
+        subject.error(error);
+    });
+    
+    return subject.asObservable();
+}
+
+// --- Debugging log function for frontend ---
+// This function will send logs to a backend endpoint for server-side collection.
+// This is useful for debugging issues that are hard to reproduce or inspect in the browser console.
+const DEBUG_LOG_URL = '/api/debug-log'; // 使用相对路径，与API_BASE_URL保持一致
+
+interface FrontendLogDetails {
+    // Define a flexible structure for details
+    [key: string]: any; 
+}
+
+// Function to send a debug log entry to the backend
+export async function sendDebugLog(source: string, event: string, details: FrontendLogDetails) {
+    const timestamp = new Date().toISOString();
+    try {
+        await fetch(DEBUG_LOG_URL, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ timestamp, source, event, details }),
+        });
+    } catch (error) {
+        console.error('Failed to send debug log to backend:', error);
+    }
+}
+
+// Helper function to pretty-print JSON (mainly for debugging display)
+function syntaxHighlight(json: string) {
+    return json.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// +++ LLM Configuration CRUD functions +++
+
+/**
+ * Adds a new LLM configuration to the backend.
+ * @param config The LLM configuration object to add.
+ * @returns The created LLM configuration.
+ */
+export async function addLLMConfiguration(config: LLMConfig): Promise<LLMConfig> {
+    try {
+        const response = await fetch(`${API_BASE_URL}/llm-configs`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(config),
+        });
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({ detail: response.statusText }));
+            throw new Error(`Failed to add LLM configuration: ${response.status} - ${errorData.detail || 'Unknown error'}`);
+        }
+        return await response.json() as LLMConfig;
+    } catch (error) {
+        console.error('Error adding LLM configuration:', error);
+        throw error;
+    }
+}
+
+/**
+ * Updates an existing LLM configuration on the backend.
+ * @param configId The ID of the LLM configuration to update.
+ * @param updatePayload An object containing the fields to update.
+ * @returns The updated LLM configuration.
+ */
+export async function updateLLMConfiguration(configId: string, updatePayload: LLMConfigUpdatePayload): Promise<LLMConfig> {
+    try {
+        const response = await fetch(`${API_BASE_URL}/llm-configs/${configId}`, {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(updatePayload),
+        });
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({ detail: response.statusText }));
+            throw new Error(`Failed to update LLM configuration ${configId}: ${response.status} - ${errorData.detail || 'Unknown error'}`);
+        }
+        return await response.json() as LLMConfig;
+    } catch (error) {
+        console.error(`Error updating LLM configuration ${configId}:`, error);
+        throw error;
+    }
+}
+
+/**
+ * Deletes an LLM configuration from the backend.
+ * @param configId The ID of the LLM configuration to delete.
+ * @returns A success message object.
+ */
+export async function deleteLLMConfiguration(configId: string): Promise<{ message: string }> {
+    try {
+        const response = await fetch(`${API_BASE_URL}/llm-configs/${configId}`, {
+            method: 'DELETE',
+        });
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({ detail: response.statusText }));
+            throw new Error(`Failed to delete LLM configuration ${configId}: ${response.status} - ${errorData.detail || 'Unknown error'}`);
+        }
+        return await response.json() as { message: string };
+    } catch (error) {
+        console.error(`Error deleting LLM configuration ${configId}:`, error);
+        throw error;
+    }
+}
+
+// +++ End LLM Configuration CRUD functions +++
+
+// +++ New function to test Ollama connection +++
+export interface OllamaConnectionTestResponse {
+    success: boolean;
+    message: string;
+    details?: string;
+}
+
+export async function testOllamaConnection(baseUrl: string): Promise<OllamaConnectionTestResponse> {
+    try {
+        const response = await fetch(`${baseUrl}/api/tags`, {
+            method: 'GET',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+        });
+        if (!response.ok) {
+            const errorData = await response.text();
+            throw new Error(`Failed to test Ollama connection: ${response.status} ${response.statusText} - ${errorData}`);
+        }
+        const responseData = await response.json();
+        return responseData as OllamaConnectionTestResponse;
+    } catch (error) {
+        console.error('Error testing Ollama connection:', error);
+        throw error;
+    }
+}
+
+/**
+ * Updates the active tools for the LLM configuration.
+ * @param activeToolsConfig Record of active tools configuration.
+ * @returns A success response object.
+ */
+export async function updateLLMActiveTools(activeToolsConfig: Record<string, any[]>): Promise<{ success: boolean; message: string }> {
+    try {
+        const response = await fetch(`${API_BASE_URL}/llm/active-tools`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ active_tools_config: activeToolsConfig }),
+        });
+        if (!response.ok) {
+            const errorData = await response.text();
+            throw new Error(`Failed to update LLM active tools: ${response.status} ${response.statusText} - ${errorData}`);
+        }
+        return await response.json() as { success: boolean; message: string };
+    } catch (error) {
+        console.error('Error updating LLM active tools:', error);
+        throw error;
+    }
+}

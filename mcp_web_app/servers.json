@@ -1,0 +1,97 @@
+{
+  "fetch": {
+    "name": "fetch",
+    "description": "",
+    "command": "uvx",
+    "args": [
+      "mcp-server-fetch"
+    ],
+    "transport": "stdio",
+    "url": null,
+    "cwd": null,
+    "env": {}
+  },
+  "arxiv-server": {
+    "name": "arxiv-server",
+    "description": "",
+    "command": "uv",
+    "args": [
+      "--directory",
+      "/Users/zaedinzeng/projects/arxiv-mcp-server",
+      "run",
+      "arxiv-mcp-server",
+      "--storage-path",
+      "/Users/zaedinzeng/projects/arxiv-mcp-server"
+    ],
+    "transport": "stdio",
+    "url": null,
+    "cwd": null,
+    "env": {}
+  },
+  "mcp-toolsets": {
+    "name": "toolsets",
+    "description": "",
+    "command": "npx",
+    "args": [
+      "-y mcp-remote@latest",
+      "https://mcpmcp.io/mcp"
+    ],
+    "transport": "stdio",
+    "url": null,
+    "cwd": null,
+    "env": {}
+  },
+  "panic": {
+    "name": "pandoc",
+    "description": "",
+    "command": "uvx",
+    "args": [
+      "mcp-pandoc"
+    ],
+    "transport": "stdio",
+    "url": null,
+    "cwd": null,
+    "env": {}
+  },
+  "calculator": {
+    "name": "calculator",
+    "description": "",
+    "command": "uvx",
+    "args": [
+      "mcp-server-calculator"
+    ],
+    "transport": "stdio",
+    "url": null,
+    "cwd": null,
+    "env": {}
+  },
+  "mcp-installer": {
+    "name": "mcp-installer",
+    "description": "",
+    "command": "npx",
+    "args": [
+      "@anaisbetts/mcp-installer"
+    ],
+    "transport": "stdio",
+    "url": null,
+    "cwd": null,
+    "env": {}
+  },
+  "china-weather": {
+    "name": "china-weather",
+    "description": "",
+    "command": "uv",
+    "args": [
+      "--directory",
+      "/Users/zaedinzeng/projects/china-weather-mcp-server",
+      "run",
+      "weather.py"
+    ],
+    "transport": "stdio",
+    "url": null,
+    "cwd": null,
+    "env": {
+      "AMAP_API_KEY": "b9234277822a9f8fba5af15e737c7165"
+    }
+  }
+}

@@ -1,0 +1,15 @@
+Metadata-Version: 2.4
+Name: mcp_web_app
+Version: 0.1.0
+Requires-Dist: fastapi>=0.103.1
+Requires-Dist: uvicorn[standard]>=0.23.2
+Requires-Dist: pydantic>=2.4.2
+Requires-Dist: langchain>=0.0.312
+Requires-Dist: langchain-anthropic>=0.0.7
+Requires-Dist: langchain-deepseek>=0.0.3
+Requires-Dist: langchain-mcp-adapters>=0.0.10
+Requires-Dist: mcp>=1.8.0
+Requires-Dist: python-dotenv>=1.0.0
+Requires-Dist: httpx>=0.24.1
+Requires-Dist: typing-extensions>=4.7.1
+Dynamic: requires-dist

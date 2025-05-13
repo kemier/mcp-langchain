@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Vue 3 兼容性检查</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 40px;
+      line-height: 1.6;
+    }
+    h1 {
+      color: #333;
+    }
+    .pass {
+      color: green;
+    }
+    .fail {
+      color: red;
+    }
+    .warning {
+      color: orange;
+    }
+    #results {
+      margin-top: 20px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Vue 3 兼容性检查</h1>
+  <p>此页面将检查您的浏览器是否支持Vue 3所需的基本功能。</p>
+  
+  <div id="results">检查中...</div>
+  
+  <script>
+    const results = document.getElementById('results');
+    const checks = [];
+    
+    // 检查ES6功能
+    function checkES6() {
+      try {
+        // 箭头函数
+        eval('() => {}');
+        // 解构
+        eval('const {a} = {a:1}');
+        // 扩展运算符
+        eval('[...Array(3)]');
+        // Class
+        eval('class Test {}');
+        // Promises
+        if (typeof Promise !== 'function') throw new Error('不支持Promise');
+        
+        checks.push({ name: 'ES6功能', result: true });
+      } catch (e) {
+        checks.push({ name: 'ES6功能', result: false, error: e.message });
+      }
+    }
+    
+    // 检查Proxy
+    function checkProxy() {
+      try {
+        if (typeof Proxy !== 'function') throw new Error('不支持Proxy');
+        const p = new Proxy({}, {});
+        checks.push({ name: 'Proxy支持', result: true });
+      } catch (e) {
+        checks.push({ name: 'Proxy支持', result: false, error: e.message });
+      }
+    }
+    
+    // 检查WeakMap
+    function checkWeakMap() {
+      try {
+        if (typeof WeakMap !== 'function') throw new Error('不支持WeakMap');
+        const wm = new WeakMap();
+        checks.push({ name: 'WeakMap支持', result: true });
+      } catch (e) {
+        checks.push({ name: 'WeakMap支持', result: false, error: e.message });
+      }
+    }
+    
+    // 检查Symbol
+    function checkSymbol() {
+      try {
+        if (typeof Symbol !== 'function') throw new Error('不支持Symbol');
+        const s = Symbol('test');
+        checks.push({ name: 'Symbol支持', result: true });
+      } catch (e) {
+        checks.push({ name: 'Symbol支持', result: false, error: e.message });
+      }
+    }
+    
+    // 检查vite的import模块支持
+    function checkImport() {
+      try {
+        if (typeof window.dynamicImport !== 'function' && typeof window.importMeta === 'undefined') {
+          checks.push({ name: 'ESM Import', result: false, error: '不支持动态import' });
+        } else {
+          checks.push({ name: 'ESM Import', result: true });
+        }
+      } catch (e) {
+        checks.push({ name: 'ESM Import', result: false, error: e.message });
+      }
+    }
+    
+    // 在脚本开始处添加这些检测
+    window.dynamicImport = null;
+    window.importMeta = null;
+    
+    // 检测是否支持import.meta
+    try {
+      // 这段代码会在支持ESM的浏览器中执行
+      const scriptElement = document.createElement('script');
+      scriptElement.type = 'module';
+      scriptElement.textContent = `
+        window.importMeta = import.meta;
+        window.dynamicImport = import;
+      `;
+      document.head.appendChild(scriptElement);
+    } catch (e) {
+      console.error('ESM not supported:', e);
+    }
+    
+    // 运行所有检查
+    function runChecks() {
+      checkES6();
+      checkProxy();
+      checkWeakMap();
+      checkSymbol();
+      checkImport();
+      
+      // 显示结果
+      let html = '<ul>';
+      let allPassed = true;
+      
+      for (const check of checks) {
+        if (!check.result) allPassed = false;
+        html += `<li class="${check.result ? 'pass' : 'fail'}">
+          ${check.name}: ${check.result ? '通过' : '失败'}
+          ${check.error ? ` - ${check.error}` : ''}
+        </li>`;
+      }
+      
+      html += '</ul>';
+      
+      if (allPassed) {
+        html = '<div class="pass"><strong>您的浏览器支持Vue 3所需的所有功能！</strong></div>' + html;
+      } else {
+        html = '<div class="fail"><strong>您的浏览器可能不支持Vue 3所需的一些功能。</strong></div>' + html;
+      }
+      
+      results.innerHTML = html;
+    }
+    
+    // 网页加载后运行检查
+    runChecks();
+  </script>
+</body>
+</html>

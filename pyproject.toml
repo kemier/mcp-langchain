@@ -1,0 +1,60 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mcp_web_app"
+version = "0.1.0"
+description = "Web-based client for Model Context Protocol (MCP) servers"
+readme = "README.md"
+authors = [
+    {name = "LocalSpark", email = "info@localspark.dev"},
+]
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.103.1",
+    "uvicorn[standard]>=0.23.2",
+    "pydantic>=2.4.2",
+    "langchain>=0.0.312",
+    "langchain-anthropic>=0.0.7",
+    "langchain-deepseek>=0.0.3",
+    "langchain-mcp-adapters>=0.0.10",
+    "mcp>=1.8.0",
+    "python-dotenv>=1.0.0",
+    "httpx>=0.24.1",
+    "typing-extensions>=4.7.1",
+    "aiohttp>=3.8.5",
+    "langchain-community>=0.3.23",
+    "langgraph>=0.4.3",
+    "mcp-client>=0.2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "black>=23.0.0",
+    "isort>=5.0.0",
+    "mypy>=1.0.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["mcp_web_app"]
+
+[tool.black]
+line-length = 88
+target-version = ["py310"]
+
+[tool.isort]
+profile = "black"
+line_length = 88
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+
+[tool.pytest]
+testpaths = ["tests"]
+python_files = "test_*.py" 

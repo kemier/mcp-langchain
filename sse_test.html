@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SSE Streaming Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        h1 {
+            color: #333;
+        }
+        .test-container {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        input, textarea {
+            width: 100%;
+            padding: 8px;
+            margin-bottom: 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+        button {
+            padding: 10px 15px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        button:disabled {
+            background-color: #cccccc;
+        }
+        .output {
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            background-color: #f9f9f9;
+            min-height: 100px;
+            max-height: 300px;
+            overflow-y: auto;
+            margin-bottom: 20px;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        .logs {
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            background-color: #f9f9f9;
+            min-height: 100px;
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        .log-entry {
+            margin-bottom: 5px;
+            padding-bottom: 5px;
+            border-bottom: 1px solid #eee;
+        }
+        .timestamp {
+            color: #888;
+        }
+        .info { color: blue; }
+        .token { color: green; }
+        .error { color: red; }
+        .complete { color: purple; }
+    </style>
+</head>
+<body>
+    <h1>SSE Streaming Test</h1>
+    
+    <div class="test-container">
+        <label for="message">Test Message:</label>
+        <textarea 
+            id="message" 
+            rows="3" 
+            placeholder="Enter a message to stream"
+        >Hello! This is a test of SSE streaming with Chinese characters: 你好，这是一个测试。</textarea>
+        
+        <label for="delay">Token Delay (ms):</label>
+        <input 
+            type="number" 
+            id="delay" 
+            value="100" 
+            min="10" 
+            max="1000"
+        />
+        
+        <button id="startButton">Start Test Stream</button>
+        <button id="stopButton" disabled>Stop Stream</button>
+    </div>
+    
+    <h2>Stream Output:</h2>
+    <div class="output" id="output">
+        <span>No stream data yet. Click "Start Test Stream" to begin.</span>
+    </div>
+    
+    <h2>Debug Logs:</h2>
+    <div class="logs" id="logs"></div>
+    
+    <script>
+        // Elements
+        const messageInput = document.getElementById('message');
+        const delayInput = document.getElementById('delay');
+        const startButton = document.getElementById('startButton');
+        const stopButton = document.getElementById('stopButton');
+        const outputContainer = document.getElementById('output');
+        const logsContainer = document.getElementById('logs');
+        
+        // Variables
+        let eventSource = null;
+        let streamText = '';
+        
+        // Functions
+        function log(type, message) {
+            const timestamp = new Date().toISOString().split('T')[1].slice(0, 12);
+            const logEntry = document.createElement('div');
+            logEntry.className = 'log-entry';
+            logEntry.innerHTML = `<span class="timestamp">${timestamp}</span> <span class="${type}">[${type}]</span> ${message}`;
+            logsContainer.prepend(logEntry);
+        }
+        
+        function startStream() {
+            if (eventSource) {
+                stopStream();
+            }
+            
+            const message = messageInput.value.trim();
+            if (!message) {
+                log('error', 'Please enter a message');
+                return;
+            }
+            
+            const delay = parseInt(delayInput.value, 10) || 100;
+            
+            streamText = '';
+            outputContainer.textContent = '';
+            
+            // Update UI
+            startButton.disabled = true;
+            stopButton.disabled = false;
+            
+            log('info', 'Starting SSE stream...');
+            
+            try {
+                // Prepare request data
+                const requestData = {
+                    message: message,
+                    delay_ms: delay
+                };
+                
+                // Make a POST request using fetch to initiate the SSE connection
+                fetch('http://localhost:8008/api/test-sse-stream', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Cache-Control': 'no-cache'
+                    },
+                    body: JSON.stringify(requestData)
+                })
+                .then(response => {
+                    if (!response.ok) {
+                        log('error', `HTTP error! Status: ${response.status}`);
+                        throw new Error(`HTTP error! Status: ${response.status}`);
+                    }
+                    
+                    log('info', `SSE connection established (${response.status})`);
+                    
+                    // Get a ReadableStream from the response body
+                    const reader = response.body.getReader();
+                    const decoder = new TextDecoder();
+                    let buffer = '';
+                    
+                    function processStream() {
+                        reader.read().then(({ done, value }) => {
+                            if (done) {
+                                log('info', 'Stream closed by server');
+                                resetUI();
+                                return;
+                            }
+                            
+                            // Decode the chunk and add to buffer
+                            const chunk = decoder.decode(value, { stream: true });
+                            buffer += chunk;
+                            
+                            log('info', `Received chunk: ${chunk.length} bytes`);
+                            
+                            // Process complete events in the buffer
+                            const events = buffer.split('\n\n');
+                            
+                            // Keep the last partial event in the buffer
+                            buffer = events.pop() || '';
+                            
+                            // Process each complete event
+                            for (const eventText of events) {
+                                if (!eventText.trim()) continue;
+                                
+                                // Parse the event
+                                let eventType = '';
+                                let eventData = '';
+                                
+                                // Split by newlines to handle multi-line events
+                                const eventLines = eventText.split('\n');
+                                for (const line of eventLines) {
+                                    if (line.startsWith('event:')) {
+                                        eventType = line.substring(6).trim();
+                                    } else if (line.startsWith('data:')) {
+                                        eventData = line.substring(5).trim();
+                                    }
+                                }
+                                
+                                // Skip if no data
+                                if (!eventData) {
+                                    log('info', 'Empty event data received, skipping');
+                                    continue;
+                                }
+                                
+                                try {
+                                    const parsedData = JSON.parse(eventData);
+                                    
+                                    // Handle different event types
+                                    if (eventType === 'token' && parsedData.content) {
+                                        log('token', `Token received: "${parsedData.content}"`);
+                                        streamText += parsedData.content;
+                                        outputContainer.textContent = streamText;
+                                    } else if (eventType === 'error_event') {
+                                        log('error', `Error event: ${parsedData.error || 'Unknown error'}`);
+                                    } else if (eventType === 'generation_complete') {
+                                        log('complete', `Generation complete: ${parsedData.status}`);
+                                        if (parsedData.status === 'done' && parsedData.content) {
+                                            // Handle complete content if needed
+                                            log('info', `Complete content length: ${parsedData.content.length} chars`);
+                                        }
+                                        resetUI();
+                                    } else {
+                                        log('info', `Unknown event type: ${eventType}`);
+                                    }
+                                } catch (err) {
+                                    log('error', `Error parsing event data: ${err.message}`);
+                                }
+                            }
+                            
+                            // Continue reading
+                            processStream();
+                        }).catch(err => {
+                            log('error', `Error reading from stream: ${err.message}`);
+                            resetUI();
+                        });
+                    }
+                    
+                    // Start processing the stream
+                    processStream();
+                })
+                .catch(error => {
+                    log('error', `Failed to start stream: ${error.message}`);
+                    resetUI();
+                });
+            } catch (error) {
+                log('error', `Error setting up stream: ${error.message}`);
+                resetUI();
+            }
+        }
+        
+        function stopStream() {
+            if (eventSource) {
+                eventSource.close();
+                eventSource = null;
+                log('info', 'Stream manually closed');
+            }
+            resetUI();
+        }
+        
+        function resetUI() {
+            startButton.disabled = false;
+            stopButton.disabled = true;
+        }
+        
+        // Event listeners
+        startButton.addEventListener('click', startStream);
+        stopButton.addEventListener('click', stopStream);
+    </script>
+</body>
+</html> 

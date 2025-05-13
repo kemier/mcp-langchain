@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCP Server Control Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            line-height: 1.6;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        .server-list {
+            margin: 20px 0;
+        }
+        .server-item {
+            border: 1px solid #ccc;
+            padding: 15px;
+            margin-bottom: 10px;
+            border-radius: 4px;
+        }
+        .status {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 4px;
+            margin-left: 10px;
+        }
+        .running {
+            background-color: #d4edda;
+            color: #155724;
+        }
+        .stopped {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+        .starting {
+            background-color: #fff3cd;
+            color: #856404;
+        }
+        button {
+            padding: 5px 10px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-right: 5px;
+        }
+        .btn-start {
+            background-color: #28a745;
+            color: white;
+        }
+        .btn-stop {
+            background-color: #dc3545;
+            color: white;
+        }
+        .btn-refresh {
+            background-color: #17a2b8;
+            color: white;
+        }
+        .log {
+            background-color: #f8f9fa;
+            border: 1px solid #ddd;
+            padding: 10px;
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: monospace;
+            white-space: pre-wrap;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>MCP Server Control Test</h1>
+        <p>This page directly tests the MCP server API endpoints without relying on Vue components.</p>
+        
+        <div class="server-list" id="serverList">
+            <p>Loading servers...</p>
+        </div>
+        
+        <div class="log" id="log"></div>
+    </div>
+
+    <script>
+        // Configuration
+        const API_BASE_URL = 'http://localhost:8008/api';
+        
+        // DOM elements
+        const serverListEl = document.getElementById('serverList');
+        const logEl = document.getElementById('log');
+        
+        // Log function
+        function log(message) {
+            const timestamp = new Date().toLocaleTimeString();
+            logEl.innerHTML += `[${timestamp}] ${message}\n`;
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+
+        // Fetch all servers
+        async function fetchServers() {
+            try {
+                log('Fetching servers...');
+                const response = await fetch(`${API_BASE_URL}/servers`);
+                if (!response.ok) {
+                    throw new Error(`Failed to fetch servers: ${response.status} ${response.statusText}`);
+                }
+                const servers = await response.json();
+                log(`Fetched ${Object.keys(servers).length} servers`);
+                displayServers(servers);
+            } catch (error) {
+                log(`Error: ${error.message}`);
+            }
+        }
+
+        // Display servers
+        function displayServers(servers) {
+            if (Object.keys(servers).length === 0) {
+                serverListEl.innerHTML = '<p>No servers configured.</p>';
+                return;
+            }
+
+            let html = '';
+            for (const [serverId, config] of Object.entries(servers)) {
+                html += `
+                    <div class="server-item" data-server-id="${serverId}">
+                        <h3>${serverId} <span class="status" id="status-${serverId}">Unknown</span></h3>
+                        <p>${config.description || 'No description'}</p>
+                        <div>
+                            <button class="btn-start" onclick="startServer('${serverId}')">Start Server</button>
+                            <button class="btn-stop" onclick="stopServer('${serverId}')">Stop Server</button>
+                            <button class="btn-refresh" onclick="refreshStatus('${serverId}')">Refresh Status</button>
+                        </div>
+                    </div>
+                `;
+            }
+            serverListEl.innerHTML = html;
+            
+            // Fetch initial status for all servers
+            for (const serverId of Object.keys(servers)) {
+                refreshStatus(serverId);
+            }
+        }
+
+        // Start server
+        async function startServer(serverId) {
+            try {
+                log(`Starting server ${serverId}...`);
+                updateStatus(serverId, 'starting');
+                
+                const response = await fetch(`${API_BASE_URL}/servers/${serverId}/start`, {
+                    method: 'POST',
+                });
+                
+                const data = await response.json();
+                log(`Start response for ${serverId}: ${JSON.stringify(data)}`);
+                
+                setTimeout(() => refreshStatus(serverId), 2000);
+            } catch (error) {
+                log(`Error starting ${serverId}: ${error.message}`);
+                updateStatus(serverId, 'error');
+            }
+        }
+
+        // Stop server
+        async function stopServer(serverId) {
+            try {
+                log(`Stopping server ${serverId}...`);
+                
+                const response = await fetch(`${API_BASE_URL}/servers/${serverId}/stop`, {
+                    method: 'POST',
+                });
+                
+                const data = await response.json();
+                log(`Stop response for ${serverId}: ${JSON.stringify(data)}`);
+                
+                refreshStatus(serverId);
+            } catch (error) {
+                log(`Error stopping ${serverId}: ${error.message}`);
+            }
+        }
+
+        // Refresh server status
+        async function refreshStatus(serverId) {
+            try {
+                const response = await fetch(`${API_BASE_URL}/servers/${serverId}/status`);
+                const data = await response.json();
+                log(`Status for ${serverId}: ${data.status}${data.pid ? ` (PID: ${data.pid})` : ''}`);
+                updateStatus(serverId, data.status);
+            } catch (error) {
+                log(`Error getting status for ${serverId}: ${error.message}`);
+                updateStatus(serverId, 'unknown');
+            }
+        }
+
+        // Update status display
+        function updateStatus(serverId, status) {
+            const statusEl = document.getElementById(`status-${serverId}`);
+            if (statusEl) {
+                statusEl.textContent = status;
+                statusEl.className = 'status';
+                
+                if (status === 'running' || status === 'connected') {
+                    statusEl.classList.add('running');
+                } else if (status === 'stopped' || status === 'disconnected') {
+                    statusEl.classList.add('stopped');
+                } else if (status === 'starting') {
+                    statusEl.classList.add('starting');
+                }
+            }
+        }
+
+        // Initialize on page load
+        document.addEventListener('DOMContentLoaded', () => {
+            log('Page loaded. Initializing...');
+            fetchServers();
+        });
+    </script>
+</body>
+</html> 

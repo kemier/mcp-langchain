@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCP Component Event Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            line-height: 1.6;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        button {
+            padding: 10px 15px;
+            margin: 5px;
+            background: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background: #45a049;
+        }
+        #log {
+            background-color: #f8f9fa;
+            border: 1px solid #ddd;
+            padding: 10px;
+            height: 300px;
+            overflow-y: auto;
+            font-family: monospace;
+            white-space: pre-wrap;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>MCP Component Event Test</h1>
+        <p>This page accesses the methods that were exposed on the window object from the Vue component.</p>
+        
+        <div id="server-controls">
+            <h2>Server Controls</h2>
+            <div id="serversList"></div>
+            <button onclick="getServers()">Load Servers</button>
+        </div>
+        
+        <div id="log"></div>
+    </div>
+
+    <script>
+        // Log helper function
+        function log(message) {
+            const logEl = document.getElementById('log');
+            const timestamp = new Date().toISOString().split('T')[1].split('.')[0];
+            logEl.innerHTML += `[${timestamp}] ${message}\n`;
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+        
+        // Get available servers
+        async function getServers() {
+            try {
+                log("Fetching servers...");
+                const response = await fetch('http://localhost:8008/api/servers');
+                const servers = await response.json();
+                log(`Found ${Object.keys(servers).length} servers`);
+                
+                // Generate buttons
+                let html = '';
+                for (const serverName in servers) {
+                    html += `
+                        <div>
+                            <strong>${serverName}</strong>: ${servers[serverName].description || 'No description'}
+                            <div>
+                                <button onclick="startServerDirect('${serverName}')">Direct API Start</button>
+                                <button onclick="startServerViaComponent('${serverName}')">Component Start</button>
+                                <button onclick="stopServerViaComponent('${serverName}')">Stop</button>
+                                <button onclick="refreshStatusViaComponent('${serverName}')">Refresh Status</button>
+                            </div>
+                        </div>
+                        <hr>
+                    `;
+                }
+                document.getElementById('serversList').innerHTML = html;
+            } catch (error) {
+                log(`Error: ${error.message}`);
+            }
+        }
+        
+        // Direct API call to start server
+        async function startServerDirect(serverName) {
+            try {
+                log(`Direct API: Starting server ${serverName}...`);
+                const response = await fetch(`http://localhost:8008/api/servers/${serverName}/start`, {
+                    method: 'POST'
+                });
+                const result = await response.json();
+                log(`Direct API Response: ${JSON.stringify(result)}`);
+            } catch (error) {
+                log(`Error: ${error.message}`);
+            }
+        }
+        
+        // Start server via Vue component method
+        function startServerViaComponent(serverName) {
+            if (window.__mcp_app_methods && window.__mcp_app_methods.handleStartServer) {
+                log(`Calling component method: handleStartServer("${serverName}")`);
+                try {
+                    window.__mcp_app_methods.handleStartServer(serverName);
+                    log("Component method called");
+                } catch (error) {
+                    log(`Error from component method: ${error.message}`);
+                }
+            } else {
+                log("ERROR: Component methods not exposed on window.__mcp_app_methods!");
+            }
+        }
+        
+        // Stop server via Vue component method
+        function stopServerViaComponent(serverName) {
+            if (window.__mcp_app_methods && window.__mcp_app_methods.handleStopServer) {
+                log(`Calling component method: handleStopServer("${serverName}")`);
+                try {
+                    window.__mcp_app_methods.handleStopServer(serverName);
+                    log("Component method called");
+                } catch (error) {
+                    log(`Error from component method: ${error.message}`);
+                }
+            } else {
+                log("ERROR: Component methods not exposed on window.__mcp_app_methods!");
+            }
+        }
+        
+        // Refresh status via Vue component method
+        function refreshStatusViaComponent(serverName) {
+            if (window.__mcp_app_methods && window.__mcp_app_methods.fetchServerStatus) {
+                log(`Calling component method: fetchServerStatus("${serverName}")`);
+                try {
+                    window.__mcp_app_methods.fetchServerStatus(serverName);
+                    log("Component method called");
+                } catch (error) {
+                    log(`Error from component method: ${error.message}`);
+                }
+            } else {
+                log("ERROR: Component methods not exposed on window.__mcp_app_methods!");
+            }
+        }
+        
+        // Initialize on page load
+        document.addEventListener('DOMContentLoaded', () => {
+            log("Page loaded");
+            
+            // Check if component methods are available
+            if (window.__mcp_app_methods) {
+                log("Component methods found on window.__mcp_app_methods");
+                for (const method in window.__mcp_app_methods) {
+                    log(`Available method: ${method}`);
+                }
+            } else {
+                log("WARNING: Component methods not found on window.__mcp_app_methods");
+                log("Make sure you've loaded this page from the Vue app!");
+            }
+        });
+    </script>
+</body>
+</html> 
