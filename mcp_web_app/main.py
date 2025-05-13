@@ -87,7 +87,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict, List, Any, Optional, AsyncGenerator
 import uvicorn
 from pydantic import BaseModel, Field, ValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 # Import WebSocketDisconnect and WebSocketState for more robust error handling
 from starlette.websockets import WebSocketDisconnect, WebSocketState
@@ -95,7 +95,7 @@ from starlette.websockets import WebSocketDisconnect, WebSocketState
 # Import ProcessManager, LangchainAgentService, config_manager, CustomAsyncIteratorCallbackHandler, and EventType
 from mcp_web_app.services.process_manager import ProcessManager
 from mcp_web_app.services.langchain_agent_service import LangchainAgentService
-from mcp_web_app.services.config_manager import config_manager
+from mcp_web_app.services.config_manager import config_manager, PREDEFINED_ERICAI_MODEL_IDENTIFIERS
 from mcp_web_app.utils.custom_event_handler import CustomAsyncIteratorCallbackHandler, EventType, MCPEventCollector
 from mcp_web_app.utils.llm import get_fast_response
 from langchain_core.callbacks.base import BaseCallbackHandler
@@ -186,6 +186,7 @@ def format_python_code(text: str) -> str:
 
 # Import LLM providers
 from langchain_deepseek import ChatDeepSeek
+from langchain_openai import ChatOpenAI # Used for EricAI integration
 
 # --- BEGIN LOGGING CONFIGURATION ---
 LOG_FILE = os.path.join(os.path.dirname(__file__), '..', 'mcp_app.log')
@@ -871,6 +872,130 @@ async def test_websocket_endpoint(websocket: WebSocket):
         logger.error(f"测试WebSocket端点: 发生错误: {e}", exc_info=True)
     finally:
         logger.info(f"测试WebSocket端点: 连接关闭, 会话 {session_id}")
+
+# --- Configuration Loading ---
+LLM_CONFIG_FILE = "llm_configs.json"
+
+def load_all_llm_configs() -> list:
+    try:
+        with open(LLM_CONFIG_FILE, 'r') as f:
+            configs = json.load(f)
+        if not isinstance(configs, list):
+            print(f"Warning: {LLM_CONFIG_FILE} does not contain a list.")
+            return []
+        return configs
+    except FileNotFoundError:
+        print(f"Warning: {LLM_CONFIG_FILE} not found.")
+        return []
+    except json.JSONDecodeError:
+        print(f"Warning: Error decoding {LLM_CONFIG_FILE}.")
+        return []
+
+# --- FastAPI App and CORS ---
+app = FastAPI(title="MCP LLM API - Modular Config & Streaming")
+
+# CORS Middleware (ensure it's correctly set up)
+origins = [ "http://localhost:5173", /* other origins */ ]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# --- Pydantic Models for EricAI Chat ---
+class EricAIChatRequest(BaseModel):
+    message: str
+    config_id: str = Field(..., description="Unique config_id from llm_configs.json")
+
+class EricAIModelInfo(BaseModel): # For /ericai_models endpoint
+    config_id: str
+    display_name: str
+
+class EricAIModelsResponse(BaseModel): # For /ericai_models endpoint
+    models: list[EricAIModelInfo]
+
+# Updated import from config_manager
+from .config_manager import (
+    llm_config_router,
+    LLMConfigManager,
+    LLMConfig as LLMConfigModel,
+)
+
+# --- Event Handlers ---
+@app.on_event("startup")
+async def on_app_startup():
+    """Tasks to run on application startup."""
+    print("Application starting up...")
+    await config_manager.ensure_default_ericai_configs_on_startup()
+    print("Default EricAI config check complete.")
+
+# Include the LLM config CRUD router
+app.include_router(llm_config_router)
+
+# --- New Endpoint for Predefined EricAI Models ---
+class EricAIProviderModelsResponse(BaseModel): # Pydantic model for the response
+    models: List[str]
+
+@app.get("/ericai_provider_models", response_model=EricAIProviderModelsResponse, tags=["EricAI Chat Support"])
+async def get_predefined_ericai_model_names():
+    """Returns the list of predefined EricAI model identifiers for config forms."""
+    return EricAIProviderModelsResponse(models=PREDEFINED_ERICAI_MODEL_IDENTIFIERS)
+
+# GET /ericai_models (List of configured EricAI services for chat dropdown - no change)
+@app.get("/ericai_models", response_model=EricAIModelsResponse, tags=["EricAI Chat"])
+async def get_ericai_display_models_from_manager():
+    all_configs = await llm_config_manager.get_all_llm_configs()
+    ericai_configs_list = [
+        EricAIModelInfo(config_id=cfg.config_id, display_name=cfg.display_name)
+        for cfg in all_configs if cfg.provider == "ericai"
+    ]
+    return EricAIModelsResponse(models=ericai_configs_list)
+
+# POST /ericai_chat (Streaming chat - no change in its core logic, still uses configured model_name_or_path)
+@app.post("/ericai_chat", tags=["EricAI Chat"])
+async def ericai_streaming_chat_from_manager(request: EricAIChatRequest):
+    # ... (This endpoint's internal logic remains the same as the previous version)
+    # It will use the `model_name_or_path` that was selected from the dropdown
+    # and saved into the specific LLMConfig via the /llm_configs endpoints.
+    try:
+        model_config_pydantic = await llm_config_manager.get_llm_config_by_id(request.config_id)
+        if not model_config_pydantic: raise HTTPException(status_code=404, detail=f"Config ID '{request.config_id}' not found.")
+        if model_config_pydantic.provider != "ericai": raise HTTPException(status_code=400, detail=f"Config ID '{request.config_id}' not 'ericai'.")
+
+        model_name = model_config_pydantic.model_name_or_path
+        base_url = model_config_pydantic.base_url
+        temperature = model_config_pydantic.temperature
+        max_tokens = model_config_pydantic.max_tokens
+        api_key = model_config_pydantic.api_key
+
+        if not model_name: raise HTTPException(status_code=500, detail=f"Config '{request.config_id}': 'model_name_or_path' missing.")
+        if not base_url: raise HTTPException(status_code=500, detail=f"Config '{request.config_id}': 'base_url' missing.")
+        if not api_key: raise HTTPException(status_code=500, detail=f"Config '{request.config_id}': 'api_key' missing.")
+
+        llm = ChatOpenAI( model=model_name, temperature=temperature if temperature is not None else 0.7, max_tokens=max_tokens if max_tokens is not None and max_tokens > 0 else None, openai_api_base=base_url, openai_api_key=api_key, streaming=True,)
+    except HTTPException as http_exc: raise http_exc
+    except Exception as e:
+        print(f"Error setting up LLM stream for config {request.config_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to initialize LLM stream: {str(e)}")
+
+    async def stream_generator():
+        try:
+            async for chunk in llm.astream(request.message):
+                content = chunk.content
+                if content: yield f"data: {json.dumps({'chunk': content})}\n\n"; await asyncio.sleep(0.01)
+        except Exception as e:
+            print(f"Error during EricAI stream (Config ID: {request.config_id}): {e}")
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+    return StreamingResponse(stream_generator(), media_type="text/event-stream")
+
+# Root endpoint
+@app.get("/", tags=["Root"])
+async def read_root_info():
+    return {"message": "MCP LLM API with predefined EricAI models in config form."}
+
+# To run: uvicorn main:app --reload (from mcp_web_app directory)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="MCP Web App Server")

@@ -1,0 +1,6 @@
+**/node_modules
+**/dist
+**/build
+**/mcp_web_app/node_modules
+**/mcp_web_app/dist
+**/mcp_web_app/build
