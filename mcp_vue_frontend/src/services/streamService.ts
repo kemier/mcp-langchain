@@ -76,36 +76,37 @@ export class StreamService {
         
         // Set a connection timeout
         const connectionTimeoutId = setTimeout(() => {
-          if (debugMode) console.log('[STREAM-TRACE] ⚠️ CONNECTION TIMEOUT TRIGGERED');
+          if (debugMode) {
+            console.log('[STREAM-TRACE] ⚠️ CONNECTION TIMEOUT TRIGGERED');
+            console.log(`[STREAM-TRACE] Socket readyState at timeout: ${socket.readyState}`);
+          }
           socket.close();
           observer.error(new Error('Connection timeout after 60 seconds'));
         }, 60000);
         
         // Handle WebSocket events
         socket.onopen = (event) => {
-          if (debugMode) console.log(`[STREAM-SERVICE] WebSocket connected for session: ${sessionId}`);
+          if (debugMode) console.log(`[STREAM-SERVICE][${sessionId}] WebSocket connected.`);
           
           // Clear connection timeout
           clearTimeout(connectionTimeoutId);
           
           // Send the payload as a JSON string
-          const messageStr = JSON.stringify(payload);
-          if (debugMode) console.log(`[STREAM-SERVICE] Sending payload: ${messageStr.substring(0, 100)}...`);
-          
-          // 添加会话ID到payload
           const enhancedPayload = {
             ...payload,
             session_id: sessionId 
           };
+          const finalMessageStr = JSON.stringify(enhancedPayload);
+          if (debugMode) console.log(`[STREAM-SERVICE][${sessionId}] Sending final payload: ${finalMessageStr}`);
           
           // Add explicit delay before sending to ensure the connection is fully established
           setTimeout(() => {
             if (socket.readyState === WebSocket.OPEN) {
-              socket.send(JSON.stringify(enhancedPayload));
-              if (debugMode) console.log(`[STREAM-SERVICE] Payload sent successfully with session_id: ${sessionId}`);
+              socket.send(finalMessageStr);
+              if (debugMode) console.log(`[STREAM-SERVICE][${sessionId}] Payload sent successfully.`);
             } else {
-              if (debugMode) console.error(`[STREAM-SERVICE] Cannot send payload, socket state: ${socket.readyState}`);
-              observer.error(new Error(`WebSocket not in OPEN state (${socket.readyState})`));
+              if (debugMode) console.error(`[STREAM-SERVICE][${sessionId}] Cannot send payload, socket state: ${socket.readyState}`);
+              observer.error(new Error(`WebSocket not in OPEN state (${socket.readyState}) for session ${sessionId}`));
             }
           }, 500); // 500ms delay
           
@@ -117,12 +118,15 @@ export class StreamService {
         };
         
         socket.onmessage = (event) => {
-          if (debugMode) console.log(`[STREAM-SERVICE] Message received for session ${sessionId}`);
+          // Log the raw event data FIRST
+          if (debugMode) {
+            console.log(`[STREAM-SERVICE-RAW][${sessionId}] Raw WebSocket message received:`, event.data);
+          }
           
           try {
             // Parse the message as JSON
             const data = JSON.parse(event.data);
-            if (debugMode) console.log(`[STREAM-SERVICE] Parsed message:`, data);
+            if (debugMode) console.log(`[STREAM-SERVICE][${sessionId}] Parsed message content:`, JSON.stringify(data, null, 2));
             
             // Process the message based on its type
             if (data.type && typeof data.type === 'string') {
@@ -131,6 +135,7 @@ export class StreamService {
               if (Object.values(StreamEventType).includes(data.type as StreamEventType)) {
                 eventType = data.type as StreamEventType;
               }
+              if (debugMode) console.log(`[STREAM-SERVICE][${sessionId}] Determined eventType: '${eventType}', data to emit:`, JSON.stringify(data.data, null, 2));
               
               // Emit the event
               observer.next({
@@ -140,12 +145,12 @@ export class StreamService {
               
               // If this is the end event, complete the observer
               if (eventType === StreamEventType.END) {
-                console.log(`[STREAM-SERVICE] Received END event for session ${sessionId}, completing stream`);
+                if (debugMode) console.log(`[STREAM-SERVICE][${sessionId}] Received END event, completing stream.`);
                 observer.complete();
               }
             } else {
               // Handle message without type
-              if (debugMode) console.warn(`[STREAM-SERVICE] Message has no type:`, data);
+              if (debugMode) console.warn(`[STREAM-SERVICE][${sessionId}] Message has no type:`, data);
               observer.next({
                 type: 'unknown',
                 data
@@ -153,10 +158,10 @@ export class StreamService {
             }
             
           } catch (e) {
-            if (debugMode) console.error(`[STREAM-SERVICE] Error parsing message:`, e);
+            if (debugMode) console.error(`[STREAM-SERVICE][${sessionId}] Error parsing message or unknown message structure. Raw data:`, event.data, 'Error:', e);
             // If we can't parse it as JSON, treat as plain text
             observer.next({
-              type: 'token',
+              type: 'token', // Or a generic 'raw_data' type
               data: event.data
             });
           }
@@ -164,9 +169,9 @@ export class StreamService {
         
         socket.onerror = (error) => {
           if (debugMode) {
-            console.error('[STREAM-TRACE] ❌ WebSocket error:', error);
-            console.error('[STREAM-TRACE] WebSocket URL:', url);
-            console.error('[STREAM-TRACE] WebSocket readyState:', socket.readyState);
+            console.error(`[STREAM-TRACE][${sessionId}] ❌ WebSocket error:`, error);
+            console.error(`[STREAM-TRACE][${sessionId}] WebSocket URL:`, url);
+            console.error(`[STREAM-TRACE][${sessionId}] WebSocket readyState:`, socket.readyState);
           }
           
           // Notify about the error
@@ -174,68 +179,68 @@ export class StreamService {
             type: 'error_event',
             data: {
               error: "WebSocket error occurred",
-              recoverable: true,
-              details: JSON.stringify(error)
+              recoverable: true, // Assuming most ws errors might be recoverable with a new connection
+              details: JSON.stringify(error) // Or a more structured error
             }
           });
+          // Do not call observer.error() or observer.complete() here if reconnection is handled in onclose
         };
         
         socket.onclose = (event) => {
-          if (debugMode) console.log(`[STREAM-TRACE] 🔌 WebSocket closed: Code: ${event.code}, Reason: ${event.reason || 'No reason provided'}`);
+          if (debugMode) {
+            console.log(`[STREAM-TRACE][${sessionId}] 🔌 WebSocket closed: Code: ${event.code}, Reason: ${event.reason || 'No reason provided'}, WasClean: ${event.wasClean}`);
+            const connInfoForClose = this.activeConnections.get(sessionId);
+            if (connInfoForClose) {
+              console.log(`[STREAM-TRACE][${sessionId}] Connection info at close: ReconnectAttempts: ${connInfoForClose.reconnectAttempts}`);
+            }
+          }
           
-          // Check if we need to reconnect
           const connectionInfo = this.activeConnections.get(sessionId);
-          
-          if (connectionInfo && connectionInfo.reconnectAttempts < this.maxReconnectAttempts) {
+
+          if (event.wasClean) { // If the WebSocket was closed cleanly by the server
+            if (debugMode) console.log(`[STREAM-SERVICE][${sessionId}] WebSocket closed cleanly. Completing stream.`);
+            this.activeConnections.delete(sessionId);
+            observer.complete(); // Complete the stream
+          } else if (connectionInfo && connectionInfo.reconnectAttempts < this.maxReconnectAttempts) {
+            // Unclean close, attempt to reconnect
             const nextAttempt = connectionInfo.reconnectAttempts + 1;
-            if (debugMode) console.log(`[STREAM-TRACE] 🔄 Reconnecting... Attempt ${nextAttempt}/${this.maxReconnectAttempts}`);
+            if (debugMode) console.log(`[STREAM-TRACE][${sessionId}] 🔄 Reconnecting (unclean close)... Attempt ${nextAttempt}/${this.maxReconnectAttempts}`);
             
-            // Update reconnect attempts
             this.activeConnections.set(sessionId, {
               ...connectionInfo,
               reconnectAttempts: nextAttempt
             });
             
-            // Notify about reconnection
             observer.next({
               type: 'info',
               data: `WebSocket disconnected. Reconnecting (${nextAttempt}/${this.maxReconnectAttempts})...`
             });
             
-            // Exponential backoff for reconnection
             const delayMs = Math.min(this.reconnectDelay * Math.pow(2, nextAttempt - 1), 30000);
             
-            // Try reconnecting
             const reconnectTimeoutId = setTimeout(() => {
-              // Create new WebSocket stream and pipe events to current observer
-              const newStream = this.createWebSocketStream(url, payload, sessionId, debugMode);
+              const newStream = this.createWebSocketStream(url, payload, sessionId, debugMode); // payload might need to be the original one
               const subscription = newStream.subscribe({
-                next: (event) => observer.next(event),
-                error: (err) => observer.error(err),
-                complete: () => observer.complete()
+                next: (newEvent) => observer.next(newEvent),
+                error: (err) => observer.error(err), // If reconnect itself fails critically
+                complete: () => observer.complete() // If reconnected stream completes
               });
-              
-              // Clean up the subscription when this observable is unsubscribed
-              return () => subscription.unsubscribe();
+              // It's tricky to manage cleanup of this inner subscription if outer one is unsubscribed.
+              // This part of the logic might need more robust handling for chained subscriptions.
             }, delayMs);
-            
-            // Return cleanup function that clears the timeout
-            return () => clearTimeout(reconnectTimeoutId);
+
+            // How to handle unsubscription during reconnect delay?
+            // The outer observable's cleanup (returned from new Observable()) will run if it's unsubscribed.
+            // We should clear this timeout there.
+            // For now, this logic is simplified. Consider a more robust RxJS operator for retry/repeat.
+
           } else {
-            // Max reconnect attempts reached or no connection info
+            // Max reconnect attempts reached for unclean close, or no connection info
             if (debugMode) {
-              console.log(`[STREAM-TRACE] ⛔ Not reconnecting. ${
-                !connectionInfo 
-                  ? 'Connection info not found.' 
-                  : `Max reconnect attempts (${this.maxReconnectAttempts}) reached.`
-              }`);
+              console.log(`[STREAM-SERVICE][${sessionId}] Max reconnect attempts reached or no connection info for unclean close. Completing stream.`);
             }
-            
-            // Remove from active connections
             this.activeConnections.delete(sessionId);
-            
-            // Complete the observable
-            observer.complete();
+            observer.complete(); // Complete the stream
           }
         };
         

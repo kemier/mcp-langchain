@@ -13,6 +13,7 @@
     </div>
     
     <vue-markdown-render :source="markdownText" :options="markdownItOptions" class="markdown-content" />
+    <!-- <pre class="raw-markdown-debug" style="white-space: pre-wrap; word-wrap: break-word; background-color: #f0f0f0; border: 1px solid #ccc; padding: 10px;">{{ markdownText }}</pre> -->
 
   </div>
 </template>
@@ -93,6 +94,51 @@ export default {
         typographer: true, // Enable some language-neutral replacement + quotes beautification
         // --- Custom Highlight Function ---
         highlight: this.customHighlight, 
+        // --- Add markdown-it instance customization for links ---
+        markdownIt: (md) => {
+          console.log('[MarkdownRenderer] Customizing markdown-it instance. Linkify is:', md.options.linkify); // Log if customization fn runs
+
+          const defaultRender = md.renderer.rules.link_open || function(tokens, idx, options, env, self) {
+            return self.renderToken(tokens, idx, options);
+          };
+
+          md.renderer.rules.link_open = function (tokens, idx, options, env, self) {
+            console.log('[MarkdownRenderer] link_open rule executed for token:', JSON.parse(JSON.stringify(tokens[idx]))); // Log if rule is hit
+
+            const hrefAttr = tokens[idx].attrGet('href');
+            console.log('[MarkdownRenderer] Link href:', hrefAttr);
+
+            // Set target
+            const targetAttrIndex = tokens[idx].attrIndex('target');
+            if (targetAttrIndex < 0) {
+              tokens[idx].attrPush(['target', '_blank']);
+              console.log('[MarkdownRenderer] Added target="_blank"');
+            } else {
+              tokens[idx].attrs[targetAttrIndex][1] = '_blank';
+              console.log('[MarkdownRenderer] Set existing target to _blank');
+            }
+
+            // Set rel
+            const relAttrIndex = tokens[idx].attrIndex('rel');
+            let currentRel = tokens[idx].attrs[relAttrIndex]?.[1] || '';
+            let newRelParts = new Set(currentRel.split(' ').filter(s => s)); // Existing parts
+            newRelParts.add('noopener');
+            newRelParts.add('noreferrer');
+            const newRel = Array.from(newRelParts).join(' ');
+
+            if (relAttrIndex < 0) {
+              tokens[idx].attrPush(['rel', newRel]);
+              console.log('[MarkdownRenderer] Added rel="' + newRel + '"');
+            } else {
+              tokens[idx].attrs[relAttrIndex][1] = newRel;
+              console.log('[MarkdownRenderer] Updated existing rel to "' + newRel + '"');
+            }
+            
+            console.log('[MarkdownRenderer] Token after modification:', JSON.parse(JSON.stringify(tokens[idx])));
+            // Pass token to default renderer.
+            return defaultRender(tokens, idx, options, env, self);
+          };
+        }
       }
       // --- End New Data Property ---
     };
@@ -248,7 +294,8 @@ export default {
           complete: () => {
             this.isLoading = false;
             if (this.debugMode) {
-              console.log(`[MARKDOWN] Stream completed for session ${this.sessionId}`);
+              console.log(`[MARKDOWN RENDERER] Stream subscription completed for session ${this.sessionId}.`);
+              console.log(`[MARKDOWN RENDERER] Emitting stream-complete with content:`, this.markdownText);
             }
             this.$emit('stream-complete', { 
               sessionId: this.sessionId, 
@@ -285,7 +332,20 @@ export default {
           this.$emit('content-final', this.internalMarkdownText);
         }
         this.forceRenderUpdate();
-      } else if (event.type === 'end') {
+      } else if (event.type === StreamEventType.END || event.type === 'CHAIN_END' || event.type === 'end') { 
+        if (event.data && typeof event.data.content === 'string') {
+          this.internalMarkdownText = event.data.content; 
+          if (this.debugMode) {
+            console.log(`[MARKDOWN RENDERER] handleStreamEvent (END/CHAIN_END): Set internalMarkdownText to:`, this.internalMarkdownText);
+          }
+        } else if (typeof event.data === 'string' && this.internalMarkdownText !== event.data) {
+            if(!this.internalMarkdownText && event.data) {
+                this.internalMarkdownText = event.data;
+            }
+            if (this.debugMode) {
+                console.log(`[MARKDOWN RENDERER] handleStreamEvent (END/CHAIN_END) with simple string: '${event.data}'. internalMarkdownText is now: '${this.internalMarkdownText}'`);
+            }
+        }
         this.forceRenderUpdate();
       }
     },
@@ -508,241 +568,182 @@ export default {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 2rem;
+  padding: 20px;
+  color: #555;
 }
 
 .spinner {
-  width: 40px;
-  height: 40px;
-  border: 4px solid rgba(0, 0, 0, 0.1);
+  border: 4px solid #f3f3f3; /* Light grey */
+  border-top: 4px solid #3498db; /* Blue */
   border-radius: 50%;
-  border-top-color: #3498db;
+  width: 30px;
+  height: 30px;
   animation: spin 1s linear infinite;
-  margin-bottom: 1rem;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
+  margin-bottom: 10px;
 }
 
 .error-message {
-  background-color: #ffebee;
-  color: #c62828;
-  padding: 1rem;
+  color: red;
+  padding: 10px;
+  border: 1px solid red;
   border-radius: 4px;
-  margin: 1rem 0;
-  border-left: 4px solid #c62828;
+  background-color: #ffebeb;
 }
 
 .retry-button {
-  background-color: #c62828;
-  color: white;
-  border: none;
-  padding: 0.5rem 1rem;
-  border-radius: 4px;
+  margin-top: 10px;
+  padding: 5px 10px;
   cursor: pointer;
-  font-weight: bold;
-  margin-top: 0.5rem;
 }
 
-.retry-button:hover {
-  background-color: #b71c1c;
+/* Debug raw markdown */
+.raw-markdown-debug {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  background-color: #f0f0f0;
+  border: 1px solid #ccc;
+  padding: 10px;
+  margin-top: 15px; /* Space it out from rendered content */
 }
 
-/* Friendly Font Styles */
-.markdown-content {
-  font-family: 'Nunito', 'Open Sans', sans-serif; /* Friendly sans-serif */
-  font-size: 15px; /* Slightly smaller for compactness */
-  line-height: 1.6; /* Improved readability */
-  color: #454d54; /* Softer dark grey */
-  padding: 10px 15px; /* Reduced padding */
-  background-color: #fdfdfd; /* Very light off-white */
-  border-radius: 6px; /* Slightly softer corners */
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06); /* Subtler shadow */
-  border: 1px solid #eaeaea; /* Lighter border */
+/* General styling for rendered markdown content */
+:deep(.markdown-content) {
+  /* Ensure it inherits colors or set defaults */
+  color: inherit; 
+  font-size: 1em;
+  line-height: 1.6;
 }
 
-/* Compact Paragraphs */
-.markdown-content :deep(p) {
-  margin-bottom: 0.65em; /* Reduced paragraph spacing */
-}
-
-/* Improved List Styling */
-.markdown-content :deep(ul),
-.markdown-content :deep(ol) {
-  margin-bottom: 0.75em; /* Space below lists */
-  padding-left: 25px; /* Indentation */
-}
-
-.markdown-content :deep(li) {
-  margin-bottom: 0.3em; /* Space between list items */
-}
-
-/* Code blocks need specific styling if using highlight.js directly again */
-/* If using vue-markdown-render's default, this might need adjustment */
-.markdown-content :deep(pre) {
-  /* background-color: #282c34; /* Example: One dark theme */
-  /* color: #abb2bf; */
-  padding: 1em;
-  margin: 0.8em 0; /* Slightly reduced margin */
-  border-radius: 5px; /* Consistent rounding */
-  overflow-x: auto; /* Handle long lines */
-  font-family: 'JetBrains Mono', 'Fira Code', Consolas, Monaco, 'Andale Mono', 'Ubuntu Mono', monospace; /* Changed to JetBrains Mono */
-  font-size: 0.88em; /* Slightly smaller code font */
-  line-height: 1.45;
-}
-
-.markdown-content :deep(code) {
-  /* Inline code styling */
-  font-family: 'JetBrains Mono', 'Fira Code', Consolas, Monaco, 'Andale Mono', 'Ubuntu Mono', monospace; /* Changed to JetBrains Mono */
-  font-size: 0.88em;
-  background-color: #f0f0f0; /* Light background for inline */
-  color: #c7254e; /* Color often used for inline code */
-  padding: 0.2em 0.4em;
-  border-radius: 3px;
-}
-
-.markdown-content :deep(pre > code) {
-  /* Reset inline styles for code within pre blocks */
-  background-color: transparent;
-  color: inherit; /* Inherit from pre / highlight.js style */
-  padding: 0;
-  border-radius: 0;
-  font-size: 1em; /* Reset size relative to pre */
-  /* Ensure font-family is explicitly set if it differs from parent pre */
-  font-family: 'JetBrains Mono', 'Fira Code', Consolas, Monaco, 'Andale Mono', 'Ubuntu Mono', monospace; /* Explicitly set JetBrains Mono */
-}
-
-/* Links */
-.markdown-content :deep(a) {
-  color: #007bff; /* Standard link blue */
-  text-decoration: none; /* Cleaner look */
-  transition: color 0.2s ease;
-}
-
-.markdown-content :deep(a:hover) {
-  color: #0056b3; /* Darker blue on hover */
-  text-decoration: underline;
-}
-
-/* Headings */
-.markdown-content :deep(h1),
-.markdown-content :deep(h2),
-.markdown-content :deep(h3),
-.markdown-content :deep(h4),
-.markdown-content :deep(h5),
-.markdown-content :deep(h6) {
-  font-family: 'Open Sans', sans-serif; /* More standard heading font */
-  margin-top: 1.2em;
-  margin-bottom: 0.6em;
-  color: #333;
-  font-weight: 600; /* Slightly bolder */
-}
-
-.markdown-content :deep(h1) { font-size: 1.8em; }
-.markdown-content :deep(h2) { font-size: 1.5em; }
-.markdown-content :deep(h3) { font-size: 1.3em; }
-/* etc. */
-
-/* Blockquotes */
-.markdown-content :deep(blockquote) {
-  margin: 0.8em 0;
-  padding: 0.5em 1em;
-  color: #6a737d; /* GitHub-like quote color */
-  border-left: 0.25em solid #dfe2e5; /* GitHub-like border */
-  background-color: #f9f9f9; /* Slight background */
-}
-
-/* --- Styles for Code Block Container, Header, Language Name, Copy Button --- */
-.markdown-content :deep(.code-block-container) {
-  position: relative;
-  margin: 0.8em 0;
-  background-color: #f6f8fa; /* Match highlight.js github light theme background */
+/* ---- STYLES FOR CODE BLOCKS (NEW/ADJUSTED) ---- */
+:deep(.code-block-container) {
+  background-color: transparent !important; /* Remove distinct background */
+  border: 1px solid #e0e0e0; /* Softer border than before, or remove if not needed */
   border-radius: 6px;
-  border: 1px solid #cccccc; /* Made border slightly darker for more prominence */
-  overflow: hidden; /* Contain children */
+  margin-top: 0.5em;
+  margin-bottom: 0.5em;
+  padding: 0 !important; /* Remove container padding */
+  overflow: hidden; /* To ensure child border-radius is respected */
 }
 
-.markdown-content :deep(.code-block-header) {
+:deep(.code-block-header) {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  background-color: #f1f3f5; /* Slightly different light gray for header */
-  padding: 6px 12px;
-  font-size: 0.8em;
-  /* color: #586069; /* Base color for header text, children will specify */
-  border-bottom: 1px solid #dfe2e5; /* Separator line */
+  background-color: #f5f5f5; /* Light header background */
+  padding: 0.3em 0.8em !important; /* Reduced padding */
+  border-bottom: 1px solid #e0e0e0; /* Separator */
 }
 
-.markdown-content :deep(.language-name) {
-  font-family: sans-serif;
+:deep(.language-name) {
+  font-size: 0.85em;
+  color: #555;
   text-transform: uppercase;
-  font-weight: 600;
-  color: #586069; /* Darker gray for language name on light background */
 }
 
-.markdown-content :deep(.copy-button) {
-  background-color: transparent;
-  border: 1px solid transparent; /* Keep space, or use #ccc for subtle border */
-  color: #586069; /* Darker gray for button text/icon on light background */
+:deep(.copy-button) {
+  background-color: #e9ecef;
+  color: #495057;
+  border: 1px solid #ced4da;
+  padding: 0.25em 0.6em;
+  border-radius: 4px;
   cursor: pointer;
-  padding: 3px 7px;
+  font-size: 0.8em;
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 0.9em;
+}
+:deep(.copy-button .bi-clipboard) {
+  /* SVG already has width/height, no need to resize here explicitly unless overriding */
+}
+
+:deep(.copy-button .copy-status) {
+  /* Style for "Copy" / "Copied!" text */
+}
+
+:deep(.copy-button.copied) {
+  background-color: #28a745; /* Green background for copied state */
+  color: white;
+  border-color: #28a745;
+}
+
+/* Styling for the <pre> and <code> tags from highlight.js */
+:deep(.code-block-container pre.hljs) {
+  padding: 0.8em !important; /* Minimal padding inside the pre */
+  margin: 0 !important; /* Remove margins from pre */
+  background-color: transparent !important; /* Make pre background transparent */
+  border-radius: 0 0 6px 6px; /* Match container's bottom radius */
+  overflow-x: auto; /* Allow horizontal scrolling for long lines */
+}
+
+:deep(.code-block-container pre.hljs code) {
+  background-color: transparent !important; /* Ensure code tag is also transparent */
+  font-size: 0.9em; /* Adjust font size if needed */
+  /* color: inherit; */ /* It should inherit from parent or hljs theme */
+}
+
+/* ---- END STYLES FOR CODE BLOCKS ---- */
+
+
+/* Example of further global styling for markdown elements if needed */
+:deep(.markdown-content h1) {
+  font-size: 1.8em;
+  margin-top: 1em;
+  margin-bottom: 0.5em;
+  border-bottom: 1px solid #eee;
+  padding-bottom: 0.3em;
+}
+
+:deep(.markdown-content h2) {
+  font-size: 1.5em;
+  margin-top: 1em;
+  margin-bottom: 0.4em;
+}
+
+:deep(.markdown-content p) {
+  margin-bottom: 0.8em;
+}
+
+:deep(.markdown-content ul),
+:deep(.markdown-content ol) {
+  padding-left: 20px;
+  margin-bottom: 0.8em;
+}
+
+:deep(.markdown-content blockquote) {
+  border-left: 4px solid #ccc;
+  padding-left: 10px;
+  margin-left: 0;
+  color: #555;
+  font-style: italic;
+}
+
+:deep(.markdown-content table) {
+  width: auto; /* Let table size itself, or set to 100% for full width */
+  border-collapse: collapse;
+  margin-bottom: 1em;
+  border: 1px solid #ddd;
+}
+
+:deep(.markdown-content th),
+:deep(.markdown-content td) {
+  border: 1px solid #ddd;
+  padding: 8px;
+  text-align: left;
+}
+
+:deep(.markdown-content th) {
+  background-color: #f7f7f7;
+  font-weight: bold;
+}
+
+:deep(.markdown-content img) {
+  max-width: 100%;
+  height: auto;
   border-radius: 4px;
-  transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
 }
 
-.markdown-content :deep(.copy-button:hover) {
-  background-color: #e8eaed; /* Light hover for button */
-  color: #24292e; /* Darker text on hover */
-  border-color: #dadce0; /* Subtle border on hover */
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
 }
-
-.markdown-content :deep(.copy-button.copied) {
-  color: #28a745; /* Green for copied status, ensure good contrast */
-  border-color: transparent;
-}
-
-.markdown-content :deep(.copy-button.copied:hover) {
-  background-color: #e8eaed;
-  color: #28a745;
-}
-
-.markdown-content :deep(.copy-button .copy-status) {
-   margin-left: 4px; /* Space between icon and text */
-}
-
-.markdown-content :deep(.copy-button svg) {
-  vertical-align: middle;
-}
-
-/* Adjust pre/code styles now they are inside the container */
-.markdown-content :deep(.code-block-container pre) {
-  margin: 0; /* Remove margin from pre */
-  padding: 12px; /* Padding inside pre */
-  border-radius: 0 0 6px 6px; /* Round bottom corners only */
-  background-color: transparent; /* Background is on the container, should match hljs theme */
-  border: none; /* Remove border from pre */
-  overflow-x: auto; /* Still needed */
-  font-family: 'JetBrains Mono', 'Fira Code', Consolas, Monaco, 'Andale Mono', 'Ubuntu Mono', monospace !important; /* Added !important for testing */
-  font-size: 0.88em;
-  line-height: 1.45;
-}
-
-/* Ensure code inside pre takes full width and has no extra padding */
-.markdown-content :deep(.code-block-container pre code.code-content) {
-  display: block;
-  padding: 0;
-  margin: 0;
-  overflow-wrap: normal; /* Prevent wrapping inside code block */
-  background: none; /* Ensure no background from inline code style */
-  color: inherit; /* Use highlight.js colors from the new light theme */
-  font-size: 1em; /* Relative to pre */
-  /* Ensure font-family is explicitly set if it differs from parent pre */
-  font-family: 'JetBrains Mono', 'Fira Code', Consolas, Monaco, 'Andale Mono', 'Ubuntu Mono', monospace !important; /* Added !important for testing */
-}
-/* --- End Code Block Styles --- */
 </style> 

@@ -13,7 +13,7 @@ def websocket_output_stream_fn_factory(websocket: WebSocket, event_queue: asynci
     This function creates a synchronous callback that takes an event type and data,
     and puts it onto the provided asyncio.Queue for later processing by the WebSocket sender.
     """
-    def websocket_event_pusher(event_type: str, data: Any) -> None:
+    async def websocket_event_pusher(event_type: str, data: Any) -> None:
         session_id = getattr(websocket, 'session_id', 'unknown')
         # Add debug logging
         logger.debug(f"WS session {session_id}: websocket_event_pusher called with event_type: {event_type}, data: {str(data)[:100]}...")

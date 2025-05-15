@@ -25,20 +25,31 @@
         "config_id": "deepseek_chat_default",
         "provider": "deepseek",
         "display_name": "DeepSeek Chat (API)",
-        "api_key_env_var": "DEEPSEEK_API_KEY",
         "deepseek_config": {
             "model": "deepseek-chat",
             "temperature": 0.7
         },
+        "api_key_env_var": "DEEPSEEK_API_KEY",
         "is_default": true
     },
-    "codestral": {
-        "config_id": "codestral",
+    "ollama_codestral_22b": {
+        "config_id": "ollama_codestral_22b",
         "provider": "ollama",
         "display_name": "codestral_22b",
         "ollama_config": {
             "base_url": "http://192.168.124.36:11434",
             "model": "codestral:22b",
+            "temperature": 0.7
+        },
+        "is_default": false
+    },
+    "ollama_deepseek_r1_14b": {
+        "config_id": "ollama_deepseek_r1_14b",
+        "provider": "ollama",
+        "display_name": "deepseekr1_14b",
+        "ollama_config": {
+            "base_url": "http://192.168.124.36:11434",
+            "model": "deepseek-r1:14b",
             "temperature": 0.7
         },
         "is_default": false

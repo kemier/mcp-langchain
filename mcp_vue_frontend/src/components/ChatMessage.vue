@@ -70,9 +70,6 @@ const props = defineProps({
 // Ref for the container div
 const markdownContainer = ref<typeof MarkdownRenderer | null>(null);
 
-// Add a new property to track accumulated content for streaming
-const accumulatedContent = ref('');
-
 // Basic computed properties
 const isThinking = computed(() => {
   // Only show thinking state if isGenerating is true AND there's no text
@@ -100,46 +97,28 @@ const messageText = computed(() => {
 
 // Add a computed property for displaying either accumulated content or full content
 const displayContent = computed(() => {
-  // When streaming, show accumulated content
-  if (props.message?.isStreaming) {
-    return accumulatedContent.value;
+  // Always use the text from the store
+  const content = props.message?.text || '';
+  if (props.message?.sender === 'agent') {
+    // Log only for agent messages and only if content is present to avoid flooding
+    if (content) {
+      console.log('[AGENT displayContent]:', content.substring(0, 100)); 
+    }
   }
-  // When not streaming, show the full text
-  return props.message?.text || '';
+  return content;
 });
 
 // Detect changes to the message text to force immediate re-render
 const messageVersion = ref(0);
-watch(() => props.message?.text, (newText, oldText) => {
-  if (newText && props.message?.isStreaming) {
-    // Only process new content, to avoid duplicating everything
-    if (oldText && newText.startsWith(oldText)) {
-      // Get only the new characters added since the last update
-      const newChars = newText.substring(oldText.length);
-      accumulatedContent.value += newChars;
-      console.log('[CHAT-MESSAGE] Added new chars to accumulated content:', newChars);
-    } else {
-      // First content or unexpected change, use all text
-      accumulatedContent.value = newText;
-    }
-  } else if (newText && !props.message?.isStreaming) {
-    // Not streaming, make sure accumulated content matches full content
-    accumulatedContent.value = newText;
-  }
-  
-  // Force re-render
-  messageVersion.value++;
-}, { immediate: true });
 
 // Watch streaming state changes
 watch(() => props.message?.isStreaming, (newVal, oldVal) => {
   console.log('[CHAT-MESSAGE] isStreaming changed:', oldVal, '->', newVal);
   
-  // When streaming ends, make sure content is complete
+  // When streaming ends, make sure content is complete (already handled by displayContent using props.message.text)
   if (oldVal === true && newVal === false) {
-    console.log('[CHAT-MESSAGE] Streaming ended, ensuring content is complete');
-    accumulatedContent.value = props.message?.text || '';
-    messageVersion.value++;
+    console.log('[CHAT-MESSAGE] Streaming ended, displayContent will use final props.message.text');
+    messageVersion.value++; // Still increment version if MarkdownRenderer needs a nudge
   }
   
   // Force update when streaming state changes
@@ -154,6 +133,13 @@ watch(() => props.message?.isGenerating, (newVal, oldVal) => {
   if (newVal !== oldVal) {
     messageVersion.value++;
   }
+}, { immediate: true });
+
+// Watch for direct changes to props.message.text to increment messageVersion
+// This ensures that MarkdownRenderer is re-evaluated if it depends on messageVersion or a key change.
+watch(() => props.message?.text, () => {
+    console.log('[CHAT-MESSAGE] props.message.text changed, incrementing messageVersion.');
+    messageVersion.value++;
 }, { immediate: true });
 
 // Helper to escape markdown characters in streaming mode
@@ -198,7 +184,7 @@ console.log('[ChatMessage] Message prop received:', JSON.parse(JSON.stringify(pr
              <span v-if="messageText.includes('[Connection error detected')">⚠️</span>
         </div>
       </div>
-       <div class="message-content" :class="{ 'thinking-bg': isThinking }">
+       <div :class="{ 'thinking-bg': isThinking }"> 
           <!-- Thinking indicator (only show if explicitly in thinking state and no text) -->
           <div v-if="isThinking" class="thinking-indicator">
             <span>Thinking</span>
@@ -267,6 +253,10 @@ console.log('[ChatMessage] Message prop received:', JSON.parse(JSON.stringify(pr
   flex: 1;
   max-width: 100%;
   min-width: 0; /* Prevent overflow */
+  background-color: #f0f0f0; /* Example: agent bubble color */
+  padding: 10px 15px;
+  border-radius: 15px;
+  flex-grow: 1;
 }
 
 .message-header {
@@ -290,37 +280,19 @@ console.log('[ChatMessage] Message prop received:', JSON.parse(JSON.stringify(pr
   animation: pulse 1.4s infinite ease-in-out;
 }
 
-.message-content {
-  background-color: white; /* Base, will be overridden */
-  padding: 12px 16px; /* Consistent padding */
-  border-radius: 15px; /* Softer, consistent rounding */
-  box-shadow: 0 1px 3px rgba(0,0,0,0.06); /* Subtle shadow */
-  position: relative;
-  min-width: 60px;
-  word-wrap: break-word;
-  hyphens: auto;
-  user-select: text; /* Allow selecting the text inside */
-}
-
-.message-content.thinking {
-   background-color: #f3f4f6; /* Example thinking style */
-}
-
 /* Style user messages */
-.chat-message-user .message-content {
-  background-color: #e7f0ff; /* Soft blue background */
-  color: #052c66; /* Dark blue text */
-  /* border-bottom-right-radius: 5px; */ /* REMOVED - Use base radius */
+.chat-message-user .message-content-wrapper {
+  background-color: #007bff; /* Example: user bubble color */
+  color: white;
 }
 
-.chat-message-agent .message-content {
+.chat-message-agent .message-content-wrapper {
   background-color: #f8f9fa; /* Very light grey background */
   color: #343a40; /* Dark grey text */
-  /* border-bottom-left-radius: 5px; */ /* REMOVED - Use base radius */
 }
 
 /* Override MarkdownRenderer color if necessary within agent bubble */
-.chat-message-agent .message-content :deep(.markdown-content) {
+.chat-message-agent .message-content-wrapper :deep(.markdown-content) {
   color: #343a40; /* Ensure markdown text matches agent bubble text color */
 }
 
@@ -357,17 +329,19 @@ console.log('[ChatMessage] Message prop received:', JSON.parse(JSON.stringify(pr
 }
 
 /* This class is now on the div displaying text */
-.markdown-content { 
-  white-space: pre-line; /* Keep this for non-code block newlines */
-  width: 100%;
+.markdown-content {
+  /* Ensure this takes up space and any specific styles for markdown rendering itself */
+  word-break: break-word;
+  overflow-wrap: break-word;
+  /* Remove any background/padding if it creates an inner box effect */
+  background-color: transparent !important; /* Override if necessary */
+  padding: 0 !important; /* Override if necessary */
 }
 
-/* User message specific text styles REMOVED as now handled above */
-/*
-.chat-message-user .markdown-content {
-  color: white;
+/* Adjust thinking-bg if it was creating an inner box */
+.thinking-bg {
+  background-color: transparent !important; /* Make it transparent */
 }
-*/
 
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(10px); }

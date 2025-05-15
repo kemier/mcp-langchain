@@ -383,9 +383,10 @@ async function handleSubmit() {
 async function confirmDelete(configId: string) {
   if (window.confirm(`Are you sure you want to delete LLM configuration "${configId}"? This cannot be undone.`)) {
     isUpdating.value = true;
+    error.value = null; // Clear previous general errors
     try {
       await deleteLLMConfiguration(configId);
-      loadLLMConfigs();
+      await loadLLMConfigs(); // Ensure this is awaited
     } catch (err: any) {
       console.error(`Failed to delete LLM configuration ${configId}:`, err);
       error.value = err.message || `Could not delete ${configId}.`;
@@ -397,13 +398,58 @@ async function confirmDelete(configId: string) {
 
 async function setDefault(configId: string) {
   isUpdating.value = true;
+  error.value = null; // Clear previous general errors
+  let previousDefaultId: string | undefined = undefined;
+
   try {
-    console.warn("setDefaultLLM function not found in apiService. Attempting update with is_default flag (requires backend support).");
+    // Find the current default LLM config
+    const currentDefault = llmConfigs.value.find(c => c.is_default);
+    if (currentDefault && currentDefault.config_id && currentDefault.config_id !== configId) {
+      previousDefaultId = currentDefault.config_id;
+      console.log(`[LLM-DEFAULT] Attempting to unset current default: ${previousDefaultId}`);
+      await updateLLMConfiguration(previousDefaultId, { is_default: false });
+      console.log(`[LLM-DEFAULT] Successfully unset previous default: ${previousDefaultId}`);
+    }
+    
+    // Set the new LLM as default
+    console.log(`[LLM-DEFAULT] Attempting to set new default: ${configId}`);
     await updateLLMConfiguration(configId, { is_default: true });
-    loadLLMConfigs();
+    console.log(`[LLM-DEFAULT] Successfully set new default: ${configId}`);
+    
+    // Reload configurations to reflect changes in the UI
+    await loadLLMConfigs();
+    console.log("[LLM-DEFAULT] LLM configurations reloaded.");
+
   } catch (err: any) {
     console.error(`Error setting default LLM ${configId}:`, err);
-    error.value = `Failed to set default: ${err.message}`;
+    let userMessage = `Failed to set ${configId} as default.`;
+    if (err.message) {
+      userMessage += ` Details: ${err.message}`;
+    }
+    if (err.response && typeof err.response.text === 'function') { // Check if response body can be read
+        try {
+            const errorBody = await err.response.text();
+            console.error("[LLM-DEFAULT] Error response body:", errorBody);
+            userMessage += ` Server response: ${errorBody}`;
+        } catch (e) {
+            console.error("[LLM-DEFAULT] Could not read error response body.");
+        }
+    }
+    error.value = userMessage;
+
+    // Optional: Attempt to revert the unsetting of the previous default if setting the new one failed
+    // This adds complexity and might also fail.
+    if (previousDefaultId && configId !== previousDefaultId) {
+        try {
+            console.warn(`[LLM-DEFAULT] Attempting to revert unsetting of previous default ${previousDefaultId} due to error setting ${configId}.`);
+            await updateLLMConfiguration(previousDefaultId, { is_default: true });
+            await loadLLMConfigs(); // Reload again after attempted revert
+        } catch (revertError: any) {
+            console.error(`[LLM-DEFAULT] Failed to revert previous default ${previousDefaultId}:`, revertError);
+            error.value += ` | Additionally, failed to restore previous default ${previousDefaultId}. Manual check recommended.`;
+        }
+    }
+
   } finally {
     isUpdating.value = false;
   }

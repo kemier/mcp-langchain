@@ -14,6 +14,15 @@ import {
 import { type Subscription } from 'rxjs';
 import ChatMessageComponent from '../components/ChatMessage.vue';
 
+interface ChatMessageInterface {
+  id: string | number;
+  sender: 'user' | 'agent' | string;
+  text: string;
+  isGenerating?: boolean;
+  isError?: boolean;
+  // Add other fields if necessary, based on actual store structure
+}
+
 const servers = ref<Record<string, ServerConfig>>({});
 const serverStatuses = reactive<Record<string, { status: string; message?: string; pid?: number; discovered_capabilities?: any[], last_updated_timestamp?: string }>>({});
 const error = ref<string | null>(null);
@@ -211,7 +220,25 @@ async function handleSendMessage() {
       true // Debug mode enabled
     ).subscribe({
       next: (eventPayload: any) => {
-        
+        // +++ EARLIEST LOG POINT +++
+        console.log('[CHAT-TRACE-ENTRY] next callback executed. Event type:', eventPayload?.type, 'Payload:', JSON.parse(JSON.stringify(eventPayload)));
+        // +++ END OF EARLIEST LOG POINT +++
+
+        // Add new detailed logging here
+        console.log('[CHAT-TRACE-DEBUG] Raw eventPayload received in ServerManagementView:', JSON.parse(JSON.stringify(eventPayload)));
+        console.log('[CHAT-TRACE-DEBUG] typeof eventPayload.data in ServerManagementView:', typeof eventPayload.data);
+        if (eventPayload.data !== null && typeof eventPayload.data === 'object') {
+          console.log('[CHAT-TRACE-DEBUG] eventPayload.data is object. Keys:', Object.keys(eventPayload.data));
+          console.log('[CHAT-TRACE-DEBUG] eventPayload.data.toString():', eventPayload.data.toString());
+          try {
+            console.log('[CHAT-TRACE-DEBUG] JSON.stringify(eventPayload.data):', JSON.stringify(eventPayload.data));
+          } catch (e) {
+            console.warn('[CHAT-TRACE-DEBUG] Could not JSON.stringify eventPayload.data:', e);
+          }
+        } else {
+          console.log('[CHAT-TRACE-DEBUG] eventPayload.data is NOT an object (or is null). Value:', eventPayload.data);
+        }
+
         // Get the agent message and log this event
         const eventType = eventPayload.type || 'unknown';
         console.log(`[CHAT-TRACE] ⬇️ Received event (${eventType})`, {
@@ -222,7 +249,7 @@ async function handleSendMessage() {
         
         // Process different event types using the store
         switch(eventPayload.type) {
-          case 'token': {
+          case 'TOKEN': {
             // Extract token content with improved nested JSON handling
             let tokenContent = '';
             
@@ -270,6 +297,16 @@ async function handleSendMessage() {
                 tokenContent = String(eventPayload.data || '');
               }
               
+              // +++ DETAILED LOGGING ADDED HERE +++
+              console.log('[CHAT-TRACE-DETAIL] Before trim check:', {
+                rawTokenContent: JSON.stringify(tokenContent),
+                tokenContentLength: tokenContent.length,
+                trimmedTokenContent: JSON.stringify(tokenContent.trim()),
+                trimmedTokenContentLength: tokenContent.trim().length,
+                isTrimmedEmpty: !tokenContent.trim()
+              });
+              // +++ END OF DETAILED LOGGING +++
+
               // Skip empty tokens
               if (!tokenContent.trim()) {
                 console.log('[CHAT-TRACE] Skipping empty token');
@@ -321,10 +358,12 @@ async function handleSendMessage() {
             break;
           }
           
+          case 'CHAIN_END':
           case 'final':
           case 'on_chain_end': {
             // Extract final content with improved handling
             let finalContent = '';
+            console.log('[CHAT-TRACE-FINAL-EVENT] Entered CHAIN_END/final/on_chain_end case. Event:', JSON.parse(JSON.stringify(eventPayload)));
             
             try {
               if (typeof eventPayload.data === 'string') {
@@ -361,7 +400,7 @@ async function handleSendMessage() {
               
               // Check if this final content is already included in the message
               const currentMessageText = 
-                store.getters.getChatHistory.find((msg: ChatMessage) => msg.id === agentMessageId)?.text || '';
+                store.getters.getChatHistory.find((msg: ChatMessageInterface) => msg.id === agentMessageId)?.text || '';
                 
               if (currentMessageText.includes(finalContent)) {
                 console.log('[CHAT-TRACE] Final content already in message, skipping');
@@ -379,7 +418,9 @@ async function handleSendMessage() {
             }
             
             // Update loading state
+            console.log('[CHAT-TRACE-FINAL-EVENT] About to set isChatLoading to false. Current value:', isChatLoading.value);
             isChatLoading.value = false;
+            console.log('[CHAT-TRACE-FINAL-EVENT] isChatLoading set to false. New value:', isChatLoading.value);
             console.log('[CHAT-TRACE] Streaming completed, loading state set to false');
             break;
           }
@@ -488,6 +529,7 @@ async function handleSendMessage() {
         
         // Reset states
         isChatLoading.value = false;
+        console.log('[CHAT-TRACE-FINALIZATION] isChatLoading set to false in COMPLETE. Current value:', isChatLoading.value);
         currentChatSubscription.value = null;
       }
     });
@@ -636,7 +678,7 @@ async function testWebSocketConnection() {
         store.dispatch('addChatMessage', {
           id: testMessageId,
           sender: 'agent',
-          text: store.getters.getChatHistory.find(msg => msg.id === testMessageId)?.text + 
+          text: store.getters.getChatHistory.find((msg: ChatMessageInterface) => msg.id === testMessageId)?.text + 
                 '\n\nReceived: ' + JSON.stringify(data, null, 2),
           isGenerating: true
         });
@@ -645,7 +687,7 @@ async function testWebSocketConnection() {
         store.dispatch('addChatMessage', {
           id: testMessageId,
           sender: 'agent',
-          text: store.getters.getChatHistory.find(msg => msg.id === testMessageId)?.text + 
+          text: store.getters.getChatHistory.find((msg: ChatMessageInterface) => msg.id === testMessageId)?.text + 
                 '\n\nReceived raw message: ' + event.data,
           isGenerating: true
         });
@@ -657,7 +699,7 @@ async function testWebSocketConnection() {
       store.dispatch('addChatMessage', {
         id: testMessageId,
         sender: 'agent',
-        text: store.getters.getChatHistory.find(msg => msg.id === testMessageId)?.text + 
+        text: store.getters.getChatHistory.find((msg: ChatMessageInterface) => msg.id === testMessageId)?.text + 
               '\n\nWebSocket error occurred.',
         isError: true,
         isGenerating: false
@@ -670,7 +712,7 @@ async function testWebSocketConnection() {
       store.dispatch('addChatMessage', {
         id: testMessageId,
         sender: 'agent',
-        text: store.getters.getChatHistory.find(msg => msg.id === testMessageId)?.text + 
+        text: store.getters.getChatHistory.find((msg: ChatMessageInterface) => msg.id === testMessageId)?.text + 
               '\n\nWebSocket connection closed.' + 
               (event.wasClean ? ' (Clean close)' : ' (Connection error)'),
         isGenerating: false
@@ -686,7 +728,7 @@ async function testWebSocketConnection() {
         store.dispatch('addChatMessage', {
           id: testMessageId,
           sender: 'agent',
-          text: store.getters.getChatHistory.find(msg => msg.id === testMessageId)?.text + 
+          text: store.getters.getChatHistory.find((msg: ChatMessageInterface) => msg.id === testMessageId)?.text + 
                 '\n\nTest completed - connection closed after timeout.',
           isGenerating: false
         });
@@ -708,6 +750,30 @@ async function testWebSocketConnection() {
     chatError.value = `WebSocket test failed: ${e}`;
     isChatLoading.value = false;
   }
+}
+
+function startNewChatSession() {
+  console.log('[CHAT-TRACE] Starting new chat session...');
+
+  // 1. Reset local component state related to an active chat
+  inputMessage.value = '';
+  isChatLoading.value = false;
+  chatError.value = null;
+
+  // 2. Cancel any ongoing stream subscription
+  if (currentChatSubscription.value) {
+    console.log('[CHAT-RXJS-DEBUG] Unsubscribing from active stream due to new chat session.');
+    currentChatSubscription.value.unsubscribe();
+    currentChatSubscription.value = null;
+  }
+
+  // 3. Reset the session ID for generating messages
+  currentGeneratingMessageId.value = null;
+
+  // 4. Dispatch an action to Vuex store to clear chat history and related state
+  store.dispatch('clearChatSession'); 
+  
+  console.log('[CHAT-TRACE] New chat session initiated.');
 }
 
 </script>
@@ -744,8 +810,11 @@ async function testWebSocketConnection() {
       <!-- Chat Section -->
       <section class="chat-section full-width-chat">
         <div class="flex flex-col">
-          <div class="mb-4 flex justify-between items-center">
+          <div class="mb-4 flex justify-between items-center chat-header-controls"> 
             <h2 class="text-xl font-bold">Agent Chat</h2>
+            <button @click="startNewChatSession" class="new-chat-button">
+              新对话
+            </button>
           </div>
         </div>
 
@@ -913,6 +982,31 @@ async function testWebSocketConnection() {
   color: #2c3e50;
   margin: 0;
 }
+.new-chat-button {
+  padding: 8px 15px;
+  font-size: 0.9rem;
+  color: #fff;
+  background-color: #6c757d;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+.new-chat-button:hover {
+  background-color: #5a6268;
+}
+
+/* Added styles for the new chat button container and button */
+.chat-header-controls {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%; /* Ensure it takes full width to space out title and button */
+  margin-bottom: 15px; /* Keep existing margin */
+  padding-bottom: 10px; /* Keep existing padding */
+  border-bottom: 2px solid #e0e0e0; /* Keep existing border */
+}
+
 .new-chat-button {
   padding: 8px 15px;
   font-size: 0.9rem;
