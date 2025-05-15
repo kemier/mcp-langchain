@@ -11,6 +11,7 @@ class ServerConfig(BaseModel):
     url: Optional[str] = None  # For SSE, HTTP-based transports
     cwd: Optional[str] = None  # For stdio transport if a specific CWD is needed
     env: Optional[Dict[str, str]] = {}  # Environment variables for the server
+    shell: Optional[bool] = False # Whether to use shell for command execution
     # This might become obsolete if langchain-mcp-adapters discovers tools directly
     # shell: bool = True # Removed
     # Add other fields from your TypeScript ServerConfig as needed

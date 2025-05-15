@@ -68,7 +68,7 @@ class ConfigManager:
                 loaded_server_names = []
                 for server_name, server_data in configs_data.items():
                     try:
-                        server_config = ServerConfig(**server_data)
+                        server_config = ServerConfig(**server_data['config'])
                         self._tool_server_configs[server_name] = server_config
                         loaded_server_names.append(server_name)
                     except ValidationError as e:

@@ -7,6 +7,7 @@ const servers = ref<Record<string, ServerConfig>>({});
 const isLoading = ref(true);
 const error = ref<string | null>(null);
 const router = useRouter();
+const route = useRoute();
 
 async function fetchServers() {
   isLoading.value = true;
@@ -44,7 +45,6 @@ async function handleDeleteServer(serverKey: string) {
 
 onMounted(async () => {
   await fetchServers();
-  const route = useRoute();
   const serverToFocus = route.query.focusServer as string;
 
   if (serverToFocus) {

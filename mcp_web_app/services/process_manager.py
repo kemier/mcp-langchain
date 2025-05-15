@@ -215,8 +215,16 @@ class ProcessManager:
             command = config.command
             args = config.args or []
             cwd = getattr(config, 'cwd', None)
-            env = getattr(config, 'env', None)
-            
+            # env = getattr(config, 'env', None) # Old problematic line
+
+            # Corrected environment preparation for the subprocess
+            config_env_dict = getattr(config, 'env', None) # Get env from config, could be dict or None
+            effective_env_for_subprocess = None # Default to None (inherit parent env)
+            if config_env_dict is not None: # If config.env was specified (e.g. {} or {'VAR':'VAL'})
+                effective_env_for_subprocess = os.environ.copy()
+                effective_env_for_subprocess.update(config_env_dict)
+            # If config_env_dict was None, effective_env_for_subprocess remains None.
+
             # We'll use the exact same command that started the server for npx commands
             # This ensures we have the same execution environment with the same packages
             if command == "npx":
@@ -245,7 +253,7 @@ class ProcessManager:
             server_params = StdioServerParameters(
                 command=command,
                 args=args,
-                env=env,
+                env=effective_env_for_subprocess, # Use the properly prepared environment
                 cwd=cwd
             )
             
