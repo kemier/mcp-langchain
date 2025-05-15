@@ -2,13 +2,6 @@ import os # Ensure os is imported for path manipulation
 from dotenv import load_dotenv
 import sys
 import logging
-
-# Add the project root to sys.path to ensure mcp_web_app can be imported
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
-    print(f"DEBUG: Added project root to sys.path: {project_root}") # Added for debugging
-
 import argparse
 import time
 import asyncio
@@ -94,7 +87,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict, List, Any, Optional, AsyncGenerator
 import uvicorn
 from pydantic import BaseModel, Field, ValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 # Import WebSocketDisconnect and WebSocketState for more robust error handling
 from starlette.websockets import WebSocketDisconnect, WebSocketState
@@ -102,7 +95,7 @@ from starlette.websockets import WebSocketDisconnect, WebSocketState
 # Import ProcessManager, LangchainAgentService, config_manager, CustomAsyncIteratorCallbackHandler, and EventType
 from mcp_web_app.services.process_manager import ProcessManager
 from mcp_web_app.services.langchain_agent_service import LangchainAgentService
-from mcp_web_app.services.config_manager import config_manager
+from mcp_web_app.services.config_manager import config_manager, PREDEFINED_ERICAI_MODEL_IDENTIFIERS
 from mcp_web_app.utils.custom_event_handler import CustomAsyncIteratorCallbackHandler, EventType, MCPEventCollector
 from mcp_web_app.utils.llm import get_fast_response
 from langchain_core.callbacks.base import BaseCallbackHandler
@@ -193,6 +186,7 @@ def format_python_code(text: str) -> str:
 
 # Import LLM providers
 from langchain_deepseek import ChatDeepSeek
+from langchain_openai import ChatOpenAI # Used for EricAI integration
 
 # --- BEGIN LOGGING CONFIGURATION ---
 LOG_FILE = os.path.join(os.path.dirname(__file__), '..', 'mcp_app.log')
@@ -630,17 +624,16 @@ async def update_active_tools(request: ActiveToolsRequest):
     """Update the LLM active tools configuration"""
     logger.info(f"API: POST /api/llm/active-tools called with config containing {len(request.active_tools_config)} servers")
     
-    # Check if config_manager is available (it should be as it's a global singleton)
-    if not config_manager: # Using the imported singleton instance
-        logger.error("API: ConfigManager not available. Cannot update global tool filter.")
-        raise HTTPException(status_code=503, detail="Configuration service is unavailable.")
+    if not app.state.agent_service:
+        logger.error("API: LangchainAgentService not available.")
+        raise HTTPException(status_code=503, detail="LLM service is unavailable.")
         
     try:
-        # Update the global tool filter directly using the ConfigManager singleton
-        config_manager.set_globally_active_tools_filter(request.active_tools_config)
-        return {"success": True, "message": "Global LLM active tools filter updated successfully."}
+        # Update the active tools configuration in the agent service
+        await app.state.agent_service.update_globally_active_tools(request.active_tools_config)
+        return {"success": True, "message": "LLM active tools updated successfully."}
     except Exception as e:
-        logger.error(f"API: Error updating LLM active tools filter: {e}", exc_info=True)
+        logger.error(f"API: Error updating LLM active tools: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 # <<< NEW TEST ENDPOINT >>>
@@ -704,118 +697,118 @@ async def websocket_chat_endpoint(websocket: WebSocket):
             })
             return
             
-        # Continuously process messages from the client
-        while True: 
-            try:
-                # Wait for a message from the client
-                logger.debug(f"WS session {session_id}: 等待客户端消息...")
-                # Note: Timeout for subsequent messages might need adjustment or be removed
-                # if long idle periods are expected. For now, keeping it.
-                data = await asyncio.wait_for(websocket.receive_json(), timeout=3600) # Extended timeout for subsequent messages
-                logger.info(f"WS session {session_id}: 收到消息: {str(data)[:200]}...")
-                
-                # Optional: Confirm message receipt
-                # await websocket.send_json({
-                # "type": "message_received",
-                # "data": {"timestamp": time.time(), "message": "消息已收到，正在处理"}
-                # })
-                
-                client_session_id = data.get("session_id", "")
-                # session_id consistency check can be useful but might be too verbose for every message.
-                # if client_session_id and client_session_id != session_id:
-                # logger.warning(f"WS session {session_id}: 客户端提供的session_id ({client_session_id}) 与服务器分配的不同")
-                
-                prompt = data.get("prompt", "")
-                tools_config = data.get("tools_config", {})
-                llm_config_id = data.get("llm_config_id")
-                agent_mode = data.get("agent_mode", "chat") # Default to "chat"
-                agent_data_source = data.get("agent_data_source")
-                
-                if not prompt or not prompt.strip():
-                    logger.warning(f"WS session {session_id}: Empty prompt received")
-                    await websocket.send_json({
-                        "type": "error_event",
-                        "data": {
-                            "error": "Prompt cannot be empty.",
-                            "recoverable": True 
-                        }
-                    })
-                    continue # Use continue to wait for the next message
-
-                request_data = {
-                    "session_id": session_id, # Use server-generated session_id
-                    "prompt": prompt,
-                    "tools_config": tools_config,
-                    "llm_config_id": llm_config_id,
-                    "agent_mode": agent_mode,
-                    "agent_data_source": agent_data_source
+        # Continuously process messages from the client - REMOVED while True
+        # while True: # REMOVED
+        try:
+            # Wait for a message from the client with a timeout
+            logger.debug(f"WS session {session_id}: 等待客户端消息...")
+            data = await asyncio.wait_for(websocket.receive_json(), timeout=120) # Increased timeout for first message
+            logger.info(f"WS session {session_id}: 收到消息: {str(data)[:200]}...")
+            
+            # 确认收到消息
+            await websocket.send_json({
+                "type": "message_received",
+                "data": {
+                    "timestamp": time.time(),
+                    "message": "消息已收到，正在处理"
                 }
+            })
+            
+            # Extract parameters from the request
+            client_session_id = data.get("session_id", "")
+            if client_session_id and client_session_id != session_id:
+                logger.warning(f"WS session {session_id}: 客户端提供的session_id ({client_session_id}) 与服务器分配的不同")
                 
-                # Inform the client that processing is starting (optional for subsequent messages)
-                # await websocket.send_json({"type": "info", "data": "Starting chat processing..."})
+            prompt = data.get("prompt", "")
+            tools_config = data.get("tools_config", {})
+            llm_config_id = data.get("llm_config_id")
+            agent_mode = data.get("agent_mode", "chat")
+            agent_data_source = data.get("agent_data_source")
+            
+            # Validate the prompt
+            if not prompt or not prompt.strip():
+                logger.warning(f"WS session {session_id}: Empty prompt received")
+                await websocket.send_json({
+                    "type": "error_event",
+                    "data": {
+                        "error": "Prompt cannot be empty.",
+                        "recoverable": True
+                    }
+                })
+                return
                 
-                await websocket_chat_stream_handler(
-                    websocket=websocket,
-                    request_data=request_data,
-                    agent_service=current_agent_service
-                )
-                
-            except WebSocketDisconnect:
-                logger.info(f"WS session {session_id}: Client disconnected gracefully.")
-                break # Exit the loop
-            except asyncio.TimeoutError:
-                logger.warning(f"WS session {session_id}: Timeout waiting for client message. Closing connection.")
-                # Optionally send a timeout message before breaking
-                try:
-                    await websocket.send_json({"type": "error_event", "data": {"error": "Timeout waiting for message.", "recoverable": False}})
-                except Exception:
-                    pass # Connection might already be closing
-                break # Exit the loop
-            except json.JSONDecodeError as e:
-                logger.error(f"WS session {session_id}: Invalid JSON received: {e}")
-                try:
-                    await websocket.send_json({"type": "error_event", "data": {"error": "Invalid JSON message format", "recoverable": True}})
-                except Exception:
-                    pass
-                # Decide whether to continue or break based on error severity
-                # For now, continue to allow client to send a corrected message
-                continue
-            except Exception as e:
-                logger.error(f"WS session {session_id}: Error processing message: {e}", exc_info=True)
-                try:
-                    await websocket.send_json({"type": "error_event", "data": {"error": f"Error processing message: {str(e)}", "recoverable": True}})
-                except Exception:
-                    pass
-                # For general errors, consider if the loop should continue or break.
-                # If error is likely to repeat, breaking might be better.
-                # For now, continue.
-                continue
+            # Create a request object to pass to the WebSocket handler
+            request_data = {
+                "session_id": session_id,
+                "prompt": prompt,
+                "tools_config": tools_config,
+                "llm_config_id": llm_config_id,
+                "agent_mode": agent_mode,
+                "agent_data_source": agent_data_source
+            }
+            
+            # Inform the client that processing is starting
+            await websocket.send_json({
+                "type": "info",
+                "data": "Starting chat processing..."
+            })
+            
+            # Process the chat and stream results
+            await websocket_chat_stream_handler(
+                websocket=websocket,
+                request_data=request_data,
+                agent_service=current_agent_service
+            )
+            
+        except WebSocketDisconnect:
+            logger.info(f"WS session {session_id}: Client disconnected during message processing")
+            # break # REMOVED break, function will now exit naturally
+        except json.JSONDecodeError as e:
+            logger.error(f"WS session {session_id}: Invalid JSON received: {e}")
+            # Attempt to send error before closing
+            try:
+                await websocket.send_json({
+                    "type": "error_event",
+                    "data": {
+                        "error": "Invalid JSON message format",
+                        "recoverable": True
+                    }
+                })
+            except Exception:
+                logger.warning(f"WS session {session_id}: Failed to send JSON error message, connection likely closed.")
+        except asyncio.TimeoutError:
+             logger.warning(f"WS session {session_id}: Timeout waiting for initial client message.")
+             try:
+                 await websocket.send_json({
+                     "type": "error_event",
+                     "data": {
+                         "error": "Timeout waiting for initial message.",
+                         "recoverable": False
+                     }
+                 })
+             except Exception:
+                 logger.warning(f"WS session {session_id}: Failed to send timeout error message, connection likely closed.")
+        except Exception as e:
+            logger.error(f"WS session {session_id}: Error processing message: {e}", exc_info=True)
+            try:
+                await websocket.send_json({
+                    "type": "error_event",
+                    "data": {
+                        "error": f"Error processing message: {str(e)}",
+                        "recoverable": True # Or False depending on error? Maybe keep True for now
+                    }
+                })
+            except Exception:
+                logger.warning(f"WS session {session_id}: Failed to send generic error message, connection likely closed.")
+                # break # REMOVED break
 
-    except WebSocketDisconnect: # This catches disconnects that happen outside the main loop (e.g., during initial accept)
-        logger.info(f"WS session {session_id}: Client disconnected (outer handler).")
-    except Exception as e: # Catch-all for unexpected errors in the endpoint setup
+    except WebSocketDisconnect:
+        logger.info(f"WS session {session_id}: Client disconnected during connection or processing.")
+    except Exception as e:
         logger.error(f"WS session {session_id}: Unexpected error in WebSocket endpoint: {e}", exc_info=True)
     finally:
-        # Revised logic for cleanup
-        try:
-            if websocket.application_state == WebSocketState.CONNECTED and \
-               websocket.client_state == WebSocketState.CONNECTED:
-                logger.info(f"WS session {session_id}: WebSocket endpoint handler ending, attempting graceful close.")
-                await websocket.close(code=1000)
-            elif websocket.client_state != WebSocketState.DISCONNECTED:
-                # If not fully connected on both ends but client isn't explicitly disconnected yet,
-                # still try to close from server-side if it makes sense.
-                # This covers cases where application_state might be CONNECTING but client is waiting.
-                logger.info(f"WS session {session_id}: WebSocket not fully in CONNECTED state (client: {websocket.client_state}, app: {websocket.application_state}), attempting close.")
-                await websocket.close(code=1006) # 1006 is Abnormal Closure
-        except RuntimeError as e: # Handles cases where close is called on an already closing/closed socket
-            logger.warning(f"WS session {session_id}: Error during websocket.close() (possibly already closing/closed): {e}")
-        except Exception as e: # Catch other potential errors during close
-            logger.error(f"WS session {session_id}: Unexpected error during websocket.close(): {e}", exc_info=True)
-        finally:
-            # Always ensure disconnection from the manager
-            connection_manager.disconnect(session_id)
-            logger.info(f"WS session {session_id}: Disconnected from ConnectionManager and endpoint cleanup finished.")
+        # Clean up the connection
+        connection_manager.disconnect(session_id)
 
 @app.websocket("/ws/test-ws")
 async def test_websocket_endpoint(websocket: WebSocket):
@@ -880,73 +873,129 @@ async def test_websocket_endpoint(websocket: WebSocket):
     finally:
         logger.info(f"测试WebSocket端点: 连接关闭, 会话 {session_id}")
 
-# Import LLMConfigUpdate model (assuming it will be created in models.py or defined here)
-# For now, we can define a Pydantic model for the update payload directly in main.py
-# or use Dict[str, Any] and rely on ConfigManager's validation.
-# Let's define a specific update model for clarity, similar to frontend's LLMConfigUpdatePayload.
+# --- Configuration Loading ---
+LLM_CONFIG_FILE = "llm_configs.json"
 
-class LLMConfigUpdate(BaseModel):
-    display_name: Optional[str] = None
-    provider: Optional[str] = None # Provider change might be complex, usually not allowed or handled carefully
-    ollama_config: Optional[Dict[str, Any]] = None # Or a more specific OllamaConfigUpdate model
-    openai_config: Optional[Dict[str, Any]] = None # Or a more specific OpenAIConfigUpdate model
-    deepseek_config: Optional[Dict[str, Any]] = None # Or a more specific DeepSeekConfigUpdate model
-    api_key_env_var: Optional[str] = None
-    is_default: Optional[bool] = None
-
-@app.post("/api/llm-configs", response_model=LLMConfig, status_code=status.HTTP_201_CREATED)
-async def add_llm_configuration_endpoint(llm_config_create: LLMConfig):
-    logger.info(f"API: POST /api/llm-configs to add new config: {llm_config_create.config_id}")
+def load_all_llm_configs() -> list:
     try:
-        # Ensure config_id is present, as it's used as the key by ConfigManager
-        if not llm_config_create.config_id:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="config_id is required.")
-        
-        # The LLMConfig model itself should be used for creation, ConfigManager expects it.
-        # No need to strip config_id here as add_llm_config uses it as a key.
-        created_config = config_manager.add_llm_config(llm_config_create)
-        return created_config
-    except ValueError as e:
-        logger.error(f"API: Error adding LLM configuration {llm_config_create.config_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e)) # 409 for duplicate
-    except Exception as e:
-        logger.error(f"API: Unexpected error adding LLM configuration {llm_config_create.config_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+        with open(LLM_CONFIG_FILE, 'r') as f:
+            configs = json.load(f)
+        if not isinstance(configs, list):
+            print(f"Warning: {LLM_CONFIG_FILE} does not contain a list.")
+            return []
+        return configs
+    except FileNotFoundError:
+        print(f"Warning: {LLM_CONFIG_FILE} not found.")
+        return []
+    except json.JSONDecodeError:
+        print(f"Warning: Error decoding {LLM_CONFIG_FILE}.")
+        return []
 
-@app.put("/api/llm-configs/{config_id}", response_model=LLMConfig)
-async def update_llm_configuration_endpoint(config_id: str, llm_config_update: LLMConfigUpdate):
-    logger.info(f"API: PUT /api/llm-configs/{config_id} to update config.")
+# --- FastAPI App and CORS ---
+app = FastAPI(title="MCP LLM API - Modular Config & Streaming")
+
+# CORS Middleware (ensure it's correctly set up)
+origins = [ "http://localhost:5173"]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# --- Pydantic Models for EricAI Chat ---
+class EricAIChatRequest(BaseModel):
+    message: str
+    config_id: str = Field(..., description="Unique config_id from llm_configs.json")
+
+class EricAIModelInfo(BaseModel): # For /ericai_models endpoint
+    config_id: str
+    display_name: str
+
+class EricAIModelsResponse(BaseModel): # For /ericai_models endpoint
+    models: list[EricAIModelInfo]
+
+# Updated import from config_manager
+from .config_manager import (
+    llm_config_router,
+    LLMConfigManager,
+    LLMConfig as LLMConfigModel,
+)
+
+# --- Event Handlers ---
+@app.on_event("startup")
+async def on_app_startup():
+    """Tasks to run on application startup."""
+    print("Application starting up...")
+    await config_manager.ensure_default_ericai_configs_on_startup()
+    print("Default EricAI config check complete.")
+
+# Include the LLM config CRUD router
+app.include_router(llm_config_router)
+
+# --- New Endpoint for Predefined EricAI Models ---
+class EricAIProviderModelsResponse(BaseModel): # Pydantic model for the response
+    models: List[str]
+
+@app.get("/ericai_provider_models", response_model=EricAIProviderModelsResponse, tags=["EricAI Chat Support"])
+async def get_predefined_ericai_model_names():
+    """Returns the list of predefined EricAI model identifiers for config forms."""
+    return EricAIProviderModelsResponse(models=PREDEFINED_ERICAI_MODEL_IDENTIFIERS)
+
+# GET /ericai_models (List of configured EricAI services for chat dropdown - no change)
+@app.get("/ericai_models", response_model=EricAIModelsResponse, tags=["EricAI Chat"])
+async def get_ericai_display_models_from_manager():
+    all_configs = await llm_config_manager.get_all_llm_configs()
+    ericai_configs_list = [
+        EricAIModelInfo(config_id=cfg.config_id, display_name=cfg.display_name)
+        for cfg in all_configs if cfg.provider == "ericai"
+    ]
+    return EricAIModelsResponse(models=ericai_configs_list)
+
+# POST /ericai_chat (Streaming chat - no change in its core logic, still uses configured model_name_or_path)
+@app.post("/ericai_chat", tags=["EricAI Chat"])
+async def ericai_streaming_chat_from_manager(request: EricAIChatRequest):
+    # ... (This endpoint's internal logic remains the same as the previous version)
+    # It will use the `model_name_or_path` that was selected from the dropdown
+    # and saved into the specific LLMConfig via the /llm_configs endpoints.
     try:
-        # Convert Pydantic model to dict for ConfigManager's update_llm_config method
-        update_data = llm_config_update.model_dump(exclude_unset=True)
-        
-        if not update_data: # Check if update_data is empty
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No update data provided.")
+        model_config_pydantic = await llm_config_manager.get_llm_config_by_id(request.config_id)
+        if not model_config_pydantic: raise HTTPException(status_code=404, detail=f"Config ID '{request.config_id}' not found.")
+        if model_config_pydantic.provider != "ericai": raise HTTPException(status_code=400, detail=f"Config ID '{request.config_id}' not 'ericai'.")
 
-        updated_config = config_manager.update_llm_config(config_id, update_data)
-        if updated_config is None:
-            logger.error(f"API: LLM configuration with ID '{config_id}' not found for update.")
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"LLM configuration with ID '{config_id}' not found.")
-        return updated_config
-    except ValueError as e: # Catch validation errors from ConfigManager or Pydantic
-        logger.error(f"API: Error updating LLM configuration {config_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-    except Exception as e:
-        logger.error(f"API: Unexpected error updating LLM configuration {config_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+        model_name = model_config_pydantic.model_name_or_path
+        base_url = model_config_pydantic.base_url
+        temperature = model_config_pydantic.temperature
+        max_tokens = model_config_pydantic.max_tokens
+        api_key = model_config_pydantic.api_key
 
-@app.delete("/api/llm-configs/{config_id}", status_code=status.HTTP_200_OK)
-async def delete_llm_configuration_endpoint(config_id: str):
-    logger.info(f"API: DELETE /api/llm-configs/{config_id} to delete config.")
-    try:
-        deleted = config_manager.delete_llm_config(config_id)
-        if not deleted:
-            logger.error(f"API: LLM configuration with ID '{config_id}' not found for deletion.")
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"LLM configuration with ID '{config_id}' not found.")
-        return {"message": f"LLM configuration '{config_id}' deleted successfully."}
+        if not model_name: raise HTTPException(status_code=500, detail=f"Config '{request.config_id}': 'model_name_or_path' missing.")
+        if not base_url: raise HTTPException(status_code=500, detail=f"Config '{request.config_id}': 'base_url' missing.")
+        if not api_key: raise HTTPException(status_code=500, detail=f"Config '{request.config_id}': 'api_key' missing.")
+
+        llm = ChatOpenAI( model=model_name, temperature=temperature if temperature is not None else 0.7, max_tokens=max_tokens if max_tokens is not None and max_tokens > 0 else None, openai_api_base=base_url, openai_api_key=api_key, streaming=True,)
+    except HTTPException as http_exc: raise http_exc
     except Exception as e:
-        logger.error(f"API: Error deleting LLM configuration {config_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+        print(f"Error setting up LLM stream for config {request.config_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to initialize LLM stream: {str(e)}")
+
+    async def stream_generator():
+        try:
+            async for chunk in llm.astream(request.message):
+                content = chunk.content
+                if content: yield f"data: {json.dumps({'chunk': content})}\n\n"; await asyncio.sleep(0.01)
+        except Exception as e:
+            print(f"Error during EricAI stream (Config ID: {request.config_id}): {e}")
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+    return StreamingResponse(stream_generator(), media_type="text/event-stream")
+
+# Root endpoint
+@app.get("/", tags=["Root"])
+async def read_root_info():
+    return {"message": "MCP LLM API with predefined EricAI models in config form."}
+
+# To run: uvicorn main:app --reload (from mcp_web_app directory)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="MCP Web App Server")

@@ -89,24 +89,22 @@ export default createStore({
         // Combine all chunks to form the complete text
         const allChunks = state.streamingChunks[messageId].map((c: StreamingChunk) => c.content).join('');
         
-        // Directly update the properties of the existing message object
-        const messageToUpdate = state.chatHistory[messageIndex];
-        console.log(`[STORE-STREAM] Updating message ${messageId}. Old text length: ${(messageToUpdate.text || '').length}, New combined text length: ${allChunks.length}, Token received: ${chunk}`);
-
-        messageToUpdate.text = allChunks;
-        messageToUpdate.isStreaming = true;
-        messageToUpdate.isGenerating = true; // Set to true while streaming
+        // Update the message
+        state.chatHistory[messageIndex] = {
+          ...state.chatHistory[messageIndex],
+          text: allChunks,
+          isStreaming: true,
+          isGenerating: false
+        };
       }
     },
     
     FINISH_STREAMING(state: VuexState, messageId: string): void {
-      console.log(`[STORE-TRACE] finishStreaming mutation called. Message ID: ${messageId}`);
       // Find the message
       const messageIndex = state.chatHistory.findIndex((msg: ChatMessage) => msg.id === messageId);
       if (messageIndex !== -1) {
         // Update streaming status
         state.chatHistory[messageIndex].isStreaming = false;
-        state.chatHistory[messageIndex].isGenerating = false; // Also set isGenerating to false
       }
     },
     
@@ -159,23 +157,12 @@ export default createStore({
           isGenerating: false
         };
       }
-    },
-
-    CLEAR_CHAT_HISTORY(state: VuexState): void {
-      state.chatHistory = [];
-      state.streamingChunks = {}; // Clear stored chunks for old messages
-      state.processingIds.clear();  // Clear any leftover processing IDs
-      // Note: vuex-persistedstate will handle clearing it from localStorage if 'chatHistory' is in paths.
     }
   },
   
   actions: {
     addChatMessage({ commit }: { commit: CommitFunction }, message: ChatMessage): void {
       commit('ADD_CHAT_MESSAGE', message);
-    },
-    
-    clearChatSession({ commit }: { commit: CommitFunction }): void {
-      commit('CLEAR_CHAT_HISTORY');
     },
     
     processStreamingToken({ commit }: { commit: CommitFunction }, { messageId, token }: { messageId: string, token: string }): void {
@@ -196,14 +183,10 @@ export default createStore({
     },
 
     // Add missing actions that are used in ServerManagementView.vue
-    processFinalContent({ commit, state }: { commit: CommitFunction, state: VuexState }, { messageId, content }: { messageId: string, content: string }): void {
-      console.log(`[STORE-TRACE] processFinalContent action called. Message ID: ${messageId}, Content: "${content ? content.substring(0, 50) + '...' : '[empty]'}"`);
-      const message = state.chatHistory.find(msg => msg.id === messageId);
-      if (message) {
-        commit('UPDATE_MESSAGE_CONTENT', { messageId, content });
-        commit('FINISH_STREAMING', messageId);
-        commit('CLEAR_PROCESSED_CHUNKS', messageId);
-      }
+    processFinalContent({ commit }: { commit: CommitFunction }, { messageId, content }: { messageId: string, content: string }): void {
+      commit('UPDATE_MESSAGE_CONTENT', { messageId, content });
+      commit('FINISH_STREAMING', messageId);
+      commit('CLEAR_PROCESSED_CHUNKS', messageId);
     },
 
     processError({ commit }: { commit: CommitFunction }, { messageId, error }: { messageId: string, error: string }): void {

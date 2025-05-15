@@ -23,6 +23,7 @@ const formConfigData = reactive<ServerConfig>({
   env: {},
   description: '',
   capabilities_for_tool_config: [],
+  shell: false,
 });
 
 const pageTitle = computed(() => {
@@ -73,11 +74,16 @@ onMounted(async () => {
         env: {},
         description: '',
         capabilities_for_tool_config: [],
+        shell: false,
     });
   }
 });
 
 async function handleSaveConfig(configToSave: ServerConfig) {
+  // DEBUGGING: Log the received configToSave object
+  console.log('[ServerConfigFormView] handleSaveConfig: received configToSave =', JSON.parse(JSON.stringify(configToSave)));
+  console.log('[ServerConfigFormView] handleSaveConfig: received configToSave.name =', JSON.stringify(configToSave?.name));
+
   isLoading.value = true; // Indicate processing
   error.value = null;
   try {

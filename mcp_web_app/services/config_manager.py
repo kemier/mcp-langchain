@@ -24,7 +24,6 @@ class ConfigManager:
     _tool_server_configs: Dict[str, ServerConfig] = {} # Loaded from servers.json
     _llm_configs: Dict[str, LLMConfig] = {}
     _default_llm_id: Optional[str] = None
-    _globally_active_tools_filter: Optional[Dict[str, Any]] = None # New attribute for global tool filter
 
     def __new__(cls):
         if cls._instance is None:
@@ -32,7 +31,6 @@ class ConfigManager:
             cls._instance._load_app_config() # Load general app config
             cls._instance._load_tool_server_configs() # Load tool server configs
             cls._instance._load_llm_configs()
-            cls._instance._globally_active_tools_filter = None # Initialize new attribute
         return cls._instance
 
     def _load_app_config(self):
@@ -182,23 +180,6 @@ class ConfigManager:
             return next(iter(self._llm_configs.values()), None)
         return None
 
-    # +++ Methods for global tool filter +++
-    def set_globally_active_tools_filter(self, active_tools_config: Optional[Dict[str, Any]]):
-        """Sets the globally active tools filter."""
-        if active_tools_config is not None and not isinstance(active_tools_config, dict):
-            print(f"Warning: Invalid type for active_tools_config. Expected Dict or None, got {type(active_tools_config)}. Filter not set.")
-            return
-        self._globally_active_tools_filter = active_tools_config
-        if active_tools_config:
-            print(f"Global tool filter updated: {active_tools_config}")
-        else:
-            print("Global tool filter cleared.")
-
-    def get_globally_active_tools_filter(self) -> Optional[Dict[str, Any]]:
-        """Gets the globally active tools filter."""
-        return self._globally_active_tools_filter
-    # +++ End methods for global tool filter +++
-
     # +++ NEW METHODS for LLM Config CRUD +++
     def _save_llm_configs(self):
         """Saves the current state of _llm_configs to llm_configs.json."""
@@ -214,7 +195,6 @@ class ConfigManager:
         except Exception as e:
             print(f"Error saving LLM configurations to {LLM_CONFIG_FILE_PATH}: {e}")
             # Potentially raise the error or handle it more gracefully depending on requirements
-            raise # Re-raise the exception
 
     def add_llm_config(self, llm_config: LLMConfig) -> LLMConfig:
         """Adds a new LLM configuration and saves it."""

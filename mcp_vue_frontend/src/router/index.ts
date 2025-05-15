@@ -3,6 +3,7 @@ import ServerManagementView from '../views/ServerManagementView.vue';
 import ServerControlsDashboard from '../views/ServerControlsDashboard.vue';
 import ServerConfigDashboard from '../views/ServerConfigDashboard.vue';
 import ServerConfigFormView from '../views/ServerConfigFormView.vue';
+import WebSocketTestComponent from '../components/WebSocketTestComponent.vue';
 import LLMManagementView from '../views/LLMManagementView.vue';
 
 const routes = [
@@ -35,6 +36,11 @@ const routes = [
     name: 'EditServerConfig',
     component: ServerConfigFormView,
     props: true
+  },
+  {
+    path: '/websocket-test',
+    name: 'WebSocketTest',
+    component: WebSocketTestComponent,
   },
   {
     path: '/settings/llm-management',

@@ -1,0 +1,312 @@
+import os # Ensure os is imported for path manipulation
+from dotenv import load_dotenv
+import sys
+import logging
+
+# Log version information
+python_version = sys.version
+print(f"Python version: {python_version}")
+
+# Explicitly load .env from the project root
+# __file__ is mcp_web_app/main.py, so ../.env should be project_root/.env
+dotenv_path = os.path.join(os.path.dirname(__file__), '..', '.env')
+if os.path.exists(dotenv_path):
+    load_dotenv(dotenv_path=dotenv_path)
+    print(f"DEBUG: Loaded .env file from: {dotenv_path}")
+else:
+    print(f"DEBUG: .env file not found at: {dotenv_path}. API_KEY must be set in environment.")
+
+# --- BEGIN DEBUG: Check if .env loaded ---
+# import os # This was the debug print, removing it.
+# print(f"DEBUG: ANTHROPIC_API_KEY from env: {os.getenv('ANTHROPIC_API_KEY')[:10]}..." if os.getenv('ANTHROPIC_API_KEY') else "DEBUG: ANTHROPIC_API_KEY not found in env")
+# --- END DEBUG ---
+
+from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
+from typing import Dict, List, Any, Optional
+import uvicorn
+from pydantic import BaseModel
+
+# Use relative imports when running directly with uvicorn main:app inside the directory
+from .models import ServerConfig, ServerStatusResponse, ChatRequest, ChatResponse, CreateServerConfigRequest, CreateServerConfigResponse, UpdateServerConfigRequest, UpdateServerConfigResponse
+from .config_manager import ConfigManager
+from .process_manager import ProcessManager
+from .langchain_agent_service import LangchainAgentService
+
+# --- BEGIN LOGGING CONFIGURATION ---
+LOG_FILE = os.path.join(os.path.dirname(__file__), '..', 'mcp_app.log')
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.FileHandler(LOG_FILE),
+        logging.StreamHandler() # Still print to console as well, can be removed if only file is needed
+    ]
+)
+logger = logging.getLogger(__name__)
+# --- END LOGGING CONFIGURATION ---
+
+app = FastAPI(title="MCP Web App", version="0.1.0")
+
+# --- BEGIN CORS CONFIGURATION ---
+# Define the origins that are allowed to make requests to this backend.
+# For development, this will be your Vue app's address.
+origins = [
+    "http://localhost:5173",  # Vue app's default dev server
+    "http://127.0.0.1:5173", # Also allow 127.0.0.1 for Vue app
+    # You might want to add your production frontend URL here later
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,       # List of origins that are allowed to make cross-origin requests.
+    allow_credentials=True,    # Support cookies (if you use them later).
+    allow_methods=["*"],       # Allow all methods (GET, POST, PUT, DELETE, etc.).
+    allow_headers=["*"],       # Allow all headers.
+)
+# --- END CORS CONFIGURATION ---
+
+# Initialize managers
+# Path to the servers.json file, relative to this main.py file
+CONFIG_PATH = os.path.join(os.path.dirname(__file__), 'servers.json')
+config_manager = ConfigManager(CONFIG_PATH)
+process_manager = ProcessManager()
+# Pass the ConfigManager instance to LangchainAgentService
+agent_service = LangchainAgentService(config_manager=config_manager)
+
+@app.get("/")
+async def root():
+    """Health check endpoint"""
+    return {
+        "status": "ok", 
+        "service": "MCP Web App", 
+        "version": "0.1.0",
+        "python_version": python_version
+    }
+
+@app.get("/api/servers", response_model=Dict[str, ServerConfig])
+async def get_servers():
+    logger.info("API: GET /api/servers called")
+    try:
+        # Use the get_all_server_configs method from the ConfigManager instance
+        server_configs = config_manager.get_all_server_configs()
+        if not server_configs:
+            logger.info("API: No server configurations found.")
+            # If you want to return an empty dict instead of an error:
+            # return {} 
+            # Or if an empty list is acceptable for the frontend (adjust frontend if so):
+            # raise HTTPException(status_code=404, detail="No server configurations found.")
+            pass # Allow returning empty dict if that's the desired behavior
+        return server_configs
+    except Exception as e:
+        logger.error(f"API: Error loading server configurations: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error loading server configurations: {str(e)}")
+
+@app.post("/api/servers/{server_name}/start", response_model=ServerStatusResponse)
+async def start_server(server_name: str, background_tasks: BackgroundTasks):
+    logger.info(f"API: POST /api/servers/{server_name}/start called")
+    # Use the get_server_config method from the ConfigManager instance
+    config = config_manager.get_server_config(server_name)
+    if not config:
+        logger.warning(f"API: Server config for '{server_name}' not found for start.")
+        raise HTTPException(status_code=404, detail="Server configuration not found")
+    
+    if process_manager.is_server_running(server_name):
+        logger.info(f"API: Server '{server_name}' is already running.")
+        # Return ServerStatusResponse for consistency
+        current_pid = process_manager.get_server_pid(server_name)
+        return ServerStatusResponse(
+            server_name=server_name, 
+            status="running", 
+            message=f"Server {server_name} is already running.",
+            pid=current_pid
+        )
+
+    try:
+        # Pass the ServerConfig object to process_manager and await the async call
+        pid = await process_manager.start_server(server_name, config)
+        logger.info(f"API: Server '{server_name}' started with PID {pid}.")
+        return ServerStatusResponse(
+            server_name=server_name, 
+            status="running" if pid else "error", # or "starting" then let status endpoint confirm
+            message=f"Server {server_name} started successfully with PID {pid}." if pid else f"Failed to start server {server_name}.",
+            pid=pid
+        )
+    except Exception as e:
+        logger.error(f"API: Error starting server '{server_name}': {e}", exc_info=True)
+        # Return error as ServerStatusResponse
+        # raise HTTPException(status_code=500, detail=str(e))
+        return ServerStatusResponse(
+            server_name=server_name,
+            status="error",
+            message=f"Error starting server {server_name}: {str(e)}",
+            pid=None
+        )
+
+@app.post("/api/servers/{server_name}/stop", response_model=ServerStatusResponse)
+async def stop_server(server_name: str):
+    logger.info(f"API: POST /api/servers/{server_name}/stop called")
+    if not process_manager.is_server_running(server_name):
+        logger.warning(f"API: Server '{server_name}' not running, cannot stop.")
+        # raise HTTPException(status_code=404, detail="Server not running")
+        return ServerStatusResponse(
+            server_name=server_name,
+            status="stopped",
+            message=f"Server {server_name} was not running.",
+            pid=None
+        )
+    try:
+        await process_manager.stop_server(server_name) # await the async call
+        logger.info(f"API: Server '{server_name}' stopped successfully.")
+        return ServerStatusResponse(
+            server_name=server_name, 
+            status="stopped", 
+            message=f"Server {server_name} stopped successfully.",
+            pid=None
+        )
+    except Exception as e:
+        logger.error(f"API: Error stopping server '{server_name}': {e}", exc_info=True)
+        # raise HTTPException(status_code=500, detail=str(e))
+        return ServerStatusResponse(
+            server_name=server_name,
+            status="error", # Or current status if known
+            message=f"Error stopping server {server_name}: {str(e)}",
+            pid=process_manager.get_server_pid(server_name) # Get PID if still available
+        )
+
+@app.get("/api/servers/{server_name}/status", response_model=ServerStatusResponse)
+async def get_server_status(server_name: str):
+    # logger.debug(f"API: GET /api/servers/{server_name}/status called") # Can be noisy
+    pid = process_manager.get_server_pid(server_name)
+    status = "running" if pid is not None else "stopped"
+    # Get discovered capabilities if any
+    discovered_capabilities = process_manager._discovered_capabilities.get(server_name)
+    # logger.debug(f"API: Status for '{server_name}': {status}, PID: {pid}")
+    return ServerStatusResponse(server_name=server_name, status=status, pid=pid, discovered_capabilities=discovered_capabilities)
+
+@app.post("/api/servers/{server_name}/refresh-capabilities", response_model=ServerStatusResponse)
+async def refresh_server_capabilities(server_name: str):
+    """Force refresh of server capabilities"""
+    logger.info(f"API: POST /api/servers/{server_name}/refresh-capabilities called")
+    
+    # First check if the server exists and is running
+    config = config_manager.get_server_config(server_name)
+    if not config:
+        logger.warning(f"API: Server config for '{server_name}' not found for capability refresh.")
+        raise HTTPException(status_code=404, detail="Server configuration not found")
+    
+    if not process_manager.is_server_running(server_name):
+        logger.warning(f"API: Server '{server_name}' is not running, cannot refresh capabilities.")
+        return ServerStatusResponse(
+            server_name=server_name,
+            status="stopped",
+            message="Server is not running. Start the server first.",
+            pid=None
+        )
+    
+    try:
+        # Refresh the capabilities
+        success = await process_manager.refresh_capabilities(server_name, config)
+        pid = process_manager.get_server_pid(server_name)
+        discovered_capabilities = process_manager._discovered_capabilities.get(server_name, [])
+        
+        if success:
+            return ServerStatusResponse(
+                server_name=server_name,
+                status="running",
+                message=f"Successfully refreshed capabilities for {server_name}.",
+                pid=pid,
+                discovered_capabilities=discovered_capabilities
+            )
+        else:
+            return ServerStatusResponse(
+                server_name=server_name,
+                status="running",
+                message=f"Failed to refresh capabilities for {server_name}.",
+                pid=pid,
+                discovered_capabilities=discovered_capabilities
+            )
+    except Exception as e:
+        logger.error(f"API: Error refreshing capabilities for '{server_name}': {e}", exc_info=True)
+        return ServerStatusResponse(
+            server_name=server_name,
+            status="error",
+            message=f"Error refreshing capabilities: {str(e)}",
+            pid=process_manager.get_server_pid(server_name)
+        )
+
+@app.post("/api/agent/chat", response_model=ChatResponse)
+async def agent_chat(request: ChatRequest):
+    logger.info(f"Backend: Received call to /api/agent/chat with message: '{request.message}'")
+    
+    tools_config_to_pass = request.active_tools_config if request.active_tools_config is not None else {}
+    logger.info(f"Backend: Processing active_tools_config: {tools_config_to_pass}")
+
+    try:
+        agent_reply = await agent_service.invoke_agent(request.message, tools_config_to_pass)
+        logger.info(f"Backend: Agent replied: '{agent_reply[:200]}...'") # Log a snippet
+        return ChatResponse(reply=agent_reply)
+    except Exception as e:
+        logger.error(f"Error in agent_chat endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error processing your request: {str(e)}")
+
+@app.post("/api/servers", response_model=CreateServerConfigResponse)
+async def create_server_config(request: CreateServerConfigRequest):
+    logger.info(f"API: POST /api/servers called with key '{request.config_key}'")
+    try:
+        config_manager.add_server_config(request.config_key, request.config)
+        logger.info(f"API: Server config '{request.config_key}' created successfully.")
+        return CreateServerConfigResponse(success=True, message=f"Server config '{request.config_key}' created.")
+    except ValueError as ve:
+        logger.warning(f"API: {ve}")
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        logger.error(f"API: Error creating server config: {e}")
+        raise HTTPException(status_code=500, detail="Failed to create server config.")
+
+@app.put("/api/servers/{server_name}", response_model=UpdateServerConfigResponse)
+async def update_server_config(server_name: str, request: UpdateServerConfigRequest):
+    logger.info(f"API: PUT /api/servers/{server_name} called")
+    
+    # Stop the server if it's running before updating config
+    if process_manager.is_server_running(server_name):
+        logger.info(f"API: Stopping server '{server_name}' before updating config.")
+        await process_manager.stop_server(server_name)
+    
+    try:
+        # Update the server configuration
+        config_manager.update_server_config(server_name, request.config)
+        logger.info(f"API: Server config '{server_name}' updated successfully.")
+        return UpdateServerConfigResponse(success=True, message=f"Server config '{server_name}' updated.")
+    except ValueError as ve:
+        logger.warning(f"API: {ve}")
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        logger.error(f"API: Error updating server config: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to update server config: {str(e)}")
+
+@app.delete("/api/servers/{server_name}", response_model=dict)
+async def remove_server_config(server_name: str):
+    logger.info(f"API: DELETE /api/servers/{server_name} called")
+    
+    # Stop the server if it's running before removing
+    if process_manager.is_server_running(server_name):
+        logger.info(f"API: Stopping server '{server_name}' before removal.")
+        await process_manager.stop_server(server_name)
+    
+    try:
+        # Remove the server configuration
+        config_manager.remove_server_config(server_name)
+        logger.info(f"API: Server config '{server_name}' removed successfully.")
+        return {"success": True, "message": f"Server config '{server_name}' removed."}
+    except ValueError as ve:
+        logger.warning(f"API: {ve}")
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        logger.error(f"API: Error removing server config: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to remove server config: {str(e)}")
+
+if __name__ == "__main__":
+    # This is for direct execution (e.g., python main.py)
+    # For development, usually run with: uvicorn mcp_web_app.main:app --reload
+    uvicorn.run(app, host="0.0.0.0", port=8008) 

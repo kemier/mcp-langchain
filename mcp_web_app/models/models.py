@@ -65,7 +65,6 @@ class OllamaConfig(BaseModel):
     base_url: str = "http://localhost:11434"
     model: str # e.g., "llama3:8b", "mistral"
     temperature: float = 0.7
-    format: Optional[str] = None
     # Add other Ollama-specific options here if needed, like num_ctx, top_k, top_p etc.
     # Example: options: Optional[Dict[str, Any]] = None 
 

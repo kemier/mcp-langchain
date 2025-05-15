@@ -81,10 +81,6 @@ async def websocket_chat_stream_handler(websocket: WebSocket, request_data: dict
                 event_count += 1
                 logger.debug(f"WS session {session_id}: Event {event_count} received from queue: Type: {event_type}, Data: {str(data)[:100]}...")
 
-                # Determine the string value of the event type for JSON serialization
-                # Prefer .name for the string representation of the enum member's key
-                event_type_str = event_type.name if hasattr(event_type, 'name') else str(event_type)
-
                 # WebSocket JSON formatting
                 if event_type == "token":
                     token_received = True
@@ -95,7 +91,7 @@ async def websocket_chat_stream_handler(websocket: WebSocket, request_data: dict
                     accumulated_tokens.append(token_data)
                     # Send token as JSON object
                     await websocket.send_json({
-                        "type": event_type_str,
+                        "type": "token",
                         "data": token_data
                     })
                 
@@ -118,7 +114,7 @@ async def websocket_chat_stream_handler(websocket: WebSocket, request_data: dict
                     logger.info(f"WS session {session_id}: Received event '{event_type}'. Content: {message_content[:100]}...")
                     if message_content:
                         await websocket.send_json({
-                            "type": event_type_str,
+                            "type": event_type,
                             "data": message_content
                         })
 
@@ -142,17 +138,17 @@ async def websocket_chat_stream_handler(websocket: WebSocket, request_data: dict
                     break # Exit the while loop
 
                 else: # Generic event pass-through
-                    logger.debug(f"WS session {session_id}: Sending generic event type '{event_type_str}' from queue.")
+                    logger.debug(f"WS session {session_id}: Sending generic event type '{event_type}' from queue.")
                     # Send all other events as JSON objects
                     if isinstance(data, str):
                         await websocket.send_json({
-                            "type": event_type_str,
+                            "type": event_type,
                             "data": data
                         })
                     else:
                         # Send complex data with proper serialization
                         await websocket.send_json({
-                            "type": event_type_str,
+                            "type": event_type,
                             "data": data
                         })
 
@@ -284,6 +280,14 @@ async def websocket_chat_stream_handler(websocket: WebSocket, request_data: dict
                  logger.error(f"WS session {session_id}: Error during agent task cleanup: {e_cancel}", exc_info=True)
                  # Don't try to send error if outer try failed, connection likely gone
 
+        # Final check to close the WebSocket from the server side if it's still open
+        if websocket.client_state == WebSocketState.CONNECTED:
+            try:
+                logger.info(f"WS session {session_id}: Closing WebSocket from server side.")
+                await websocket.close(code=1000) # Normal closure
+            except Exception as e_close:
+                 logger.warning(f"WS session {session_id}: Error during server-side WebSocket close: {e_close}")
+        
         logger.info(f"WS session {session_id}: Cleaned up resources.")
 
 async def chat_bot_invoke(agent_service, request):

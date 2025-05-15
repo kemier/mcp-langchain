@@ -15,12 +15,14 @@ const props = defineProps({
       env: {},
       description: '',
       capabilities_for_tool_config: [],
+      shell: false, // Added default for shell
       // mcp_config: {} // If you have this field
     })
   },
   serverKey: {
-    type: String,
-    required: true // Can be a special key like '__NEW_SERVER__' for new ones
+    type: [String, null] as PropType<string | null>,
+    default: null, // Explicitly allow null and provide it as a default
+    // required: true // This can be effectively conditional or handled by form logic
   },
   isNew: {
     type: Boolean,
@@ -50,6 +52,8 @@ watch(() => props.initialConfig, (newVal) => {
   if (!parsedVal.args) {
     parsedVal.args = [];
   }
+  // Ensure shell has a boolean value, defaulting to false if undefined/null
+  parsedVal.shell = typeof parsedVal.shell === 'boolean' ? parsedVal.shell : false;
   Object.assign(localConfig, parsedVal);
 }, { deep: true, immediate: true });
 
@@ -115,15 +119,22 @@ function removeEnvVar(key: string) {
 
 function handleSave() {
   if (props.isProcessing) return;
+
+  // DEBUGGING: Log the value of localConfig.name
+  console.log('[ServerConfigCard] handleSave: localConfig.name =', JSON.stringify(localConfig.name));
+  console.log('[ServerConfigCard] handleSave: localConfig.name?.trim() =', JSON.stringify(localConfig.name?.trim()));
+  console.log('[ServerConfigCard] handleSave: props.isNew =', props.isNew);
+
   if (props.isNew && !localConfig.name?.trim()) {
-    alert('Server Name (Configuration Key) is required for a new server.');
+    // alert('Server Name (Configuration Key) is required for a new server.');
+    console.error('[ServerConfigCard] INSIDE IF BLOCK - Condition was unexpectedly true. This should not happen with current logs.');
     return;
   }
   // If an argument is being edited, save it before saving the whole config
   if (editingArgIndex.value !== null) {
     saveEditedArgument();
   }
-  emit('save', props.serverKey, { ...localConfig });
+  emit('save', { ...localConfig });
 }
 
 function handleCancel() {
@@ -179,6 +190,13 @@ function handleDelete() {
         <div class="form-section">
             <label :for="`cwd-${serverKey}`">Working Directory (CWD):</label>
             <input :id="`cwd-${serverKey}`" v-model="localConfig.cwd" :disabled="isProcessing" placeholder="Optional: /path/to/server/directory" />
+        </div>
+        <div class="form-section form-section-checkbox">
+            <label :for="`shell-${serverKey}`" class="checkbox-label">
+                <input type="checkbox" :id="`shell-${serverKey}`" v-model="localConfig.shell" :disabled="isProcessing" />
+                Use Shell for Command
+            </label>
+            <small>If checked, the command will be executed through the system's shell (e.g., bash, cmd). Allows shell features like pipes, but be cautious with untrusted input.</small>
         </div>
     </div>
 
@@ -606,5 +624,24 @@ function handleDelete() {
   /* margin-top: 0; */ /* If it's the first thing after h4 if list is empty */
 } 
 /* This logic might be complex with v-for, relying on margin-bottom of h4 and margin-top of form is safer */
+
+.form-section-checkbox label.checkbox-label {
+  display: flex;
+  align-items: center;
+  font-weight: normal; /* Overriding bolder label from general .form-section label */
+  color: #4a5568;
+  margin-bottom: 0; /* Remove bottom margin if it's just the checkbox */
+}
+
+.form-section-checkbox input[type="checkbox"] {
+  width: auto; /* Override full width from general input styling */
+  margin-right: 10px;
+  /* Custom styling for checkbox can go here if needed */
+}
+
+.form-section-checkbox small {
+    margin-top: 4px; /* Space between checkbox and help text */
+    /* display: block; // Already handled by general .form-section small */
+}
 
 </style> 

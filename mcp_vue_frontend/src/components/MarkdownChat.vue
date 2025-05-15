@@ -160,20 +160,16 @@ export default {
     },
     
     onStreamComplete(messageIndex, data) {
-      console.log('[MARKDOWN CHAT] onStreamComplete received data:', JSON.parse(JSON.stringify(data)));
-
       this.isWaitingForResponse = false;
       this.isAgentTyping = false;
       
+      // Mark the message as no longer streaming
       if (messageIndex >= 0 && messageIndex < this.messages.length) {
         this.messages[messageIndex].isStreaming = false;
-        if (data && data.content) { 
-          this.messages[messageIndex].content = data.content;
-          console.log(`[MARKDOWN CHAT] Updated message ${messageIndex} content to:`, data.content);
-        } else {
-          console.warn(`[MARKDOWN CHAT] onStreamComplete: data.content is missing or empty. Data:`, JSON.parse(JSON.stringify(data)));
-        }
+        this.messages[messageIndex].content = data.content;
       }
+      
+      console.log('Stream completed for session', data.sessionId);
     },
     
     getSenderName(sender) {
